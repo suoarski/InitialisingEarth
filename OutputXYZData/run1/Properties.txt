@@ -1,0 +1,33 @@
+upliftTemplate: <scipy.interpolate.interpolate.interp1d object at 0x0000025BD86F3680>
+continentalShelfTemplate: <scipy.interpolate.interpolate.interp1d object at 0x0000025BD86F35E0>
+platePolygonsDirectory: ./Matthews_etal_GPC_2016_MesozoicCenozoic_PlateTopologies_PMAG.gpmlz
+platePolygonsDirectory400MYA: ./Matthews_etal_GPC_2016_Paleozoic_PlateTopologies_PMAG.gpmlz
+rotationsDirectory: ./Matthews_etal_GPC_2016_410-0Ma_GK07_PMAG.rot
+coastLinesDirectory: ./Matthews_etal_GPC_2016_Coastlines.gpmlz
+timeFrom: 100
+timeTo: 0
+deltaTime: 5
+resolution: 400
+earthRadius: 6371
+heightAmplificationFactor: 60
+maxUpliftRange: 700
+maxMountainHeight: 8
+baseSubductionUplift: 0.3
+numberToAverageOver: 40
+pointToPassThrough: (0, 0.05)
+centre: 3.0
+oceanDepth: 5.5
+ridgeDepth: 2.5
+ageProportion: 0.35
+oceanShelfLength: 400
+isOceanThreshold: -1.0
+divergingContinentLoweringRange: 80
+loweringRate: 0.4
+meltingRate: 0.005
+weightInfluenceRange: 1000
+meltingSigmoidCentre: 500
+meltingSigmoidSteepness: 0.007142857142857143
+autoRunSimulation: True
+saveAnimation: True
+showMainPlot: False
+writeDataToFile: True

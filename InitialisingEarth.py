@@ -354,7 +354,7 @@ def getDistancesFromSubZones(sphereXYZ, subZoneXYZ, plateIds, overridingPlateIds
 
 
 #Function for showing alternative plots
-def showAlternativePlots(showUpliftTemplate, showContShelfTemplate, showHeightTransfer, showMeltingProfile):
+def showAlternativePlots(props, showUpliftTemplate, showContShelfTemplate, showHeightTransfer, showMeltingProfile):
     exit=False
     if showHeightTransfer:
         x = np.arange(-oceanDepth, maxMountainHeight, (maxMountainHeight+oceanDepth)/1000)
@@ -825,7 +825,7 @@ if __name__ == '__main__':
     props['coastLinesDirectory'] = './Matthews_etal_GPC_2016_Coastlines.gpmlz'
 
     #Set the time range of simulation and time steps
-    props['timeFrom'], props['timeTo'], props['deltaTime'] = 100, 70, 5
+    props['timeFrom'], props['timeTo'], props['deltaTime'] = 100, 0, 5
 
     #General earth properties
     props['resolution'] = 100 #Resolution of sphere
@@ -866,7 +866,7 @@ if __name__ == '__main__':
     props['writeDataToFile'] = True #Do we want to save data as a csv file?
     
     #If any of the show templates booleans are true, then we show a plot of the template curves and don't run the main simulation
-    showAlternativePlots(showUpliftTemplate, showContShelfTemplate, showHeightTransfer, showMeltingProfile)
+    showAlternativePlots(props, showUpliftTemplate, showContShelfTemplate, showHeightTransfer, showMeltingProfile)
     runMainTectonicSimulation(props)
         
         

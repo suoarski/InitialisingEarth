@@ -27,7 +27,7 @@ platePolygonsDirectory = './Matthews_etal_GPC_2016_MesozoicCenozoic_PlateTopolog
 rotationsDirectory = './Matthews_etal_GPC_2016_410-0Ma_GK07_PMAG.rot'
 
 #Specify properties and folder with data to animate
-folderName = 'run2'
+folderName = 'run1'
 folderDir = './OutputXYZData/{}'.format(folderName)
 earthRadius = 6371
 showCollisionSpeed = True

@@ -104,13 +104,13 @@ if __name__ == '__main__':
     earthInit.runMainTectonicSimulation(props)
     
     props['resolution'] = 400
-    earthInit.runMainTectonicSimulation(props)
+    #earthInit.runMainTectonicSimulation(props)
     
     props['timeFrom'] = 200
     props['timeTo'] = 100
-    earthInit.runMainTectonicSimulation(props)
+    #earthInit.runMainTectonicSimulation(props)
     
     props['deltaTime'] = 1
     props['timeTo'] = 0
-    earthInit.runMainTectonicSimulation(props)
+    #earthInit.runMainTectonicSimulation(props)
     

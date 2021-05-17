@@ -20,7 +20,6 @@ def pyvistaLinesFromPoints(points):
     poly.lines = the_cell
     return poly
 
-
 #Directory for data files
 platePolygonsDirectory = './Matthews_etal_GPC_2016_MesozoicCenozoic_PlateTopologies_PMAG.gpmlz'
 platePolygonsDirectory400MYA = './Matthews_etal_GPC_2016_Paleozoic_PlateTopologies_PMAG.gpmlz'
@@ -29,16 +28,14 @@ coastLinesDirectory = './Matthews_etal_GPC_2016_Coastlines.gpmlz'
 
 #Parameters to be used
 time = 5
-resolution = 400
+resolution = 100
 earthRadius = 6317
 
+#Initiate earth as a sphere
 sphereMesh = pv.Sphere(radius=earthRadius, theta_resolution=resolution, phi_resolution=resolution)
 sphereXYZ, sphereFaces = sphereMesh.points, sphereMesh.faces
 
-
-
-
-#Get pygplates to resolve data at specified time
+#Initiate lists to be used for boundary data storage
 boundaryXYZ, boundaryType, sharedBoundID = [], [], []
 resolvedTopologies, sharedBoundarySections = [], []
 pygplates.resolve_topologies(platePolygonsDirectory, rotationsDirectory, resolvedTopologies, int(time), sharedBoundarySections)
@@ -46,18 +43,15 @@ pygplates.resolve_topologies(platePolygonsDirectory, rotationsDirectory, resolve
 #Loop through shared boundary sections and subsections
 for i, shareBound in enumerate(sharedBoundarySections):
     boundType = shareBound.get_feature().get_feature_type()
-    isOceanicRidge = boundType == pygplates.FeatureType.gpml_mid_ocean_ridge
+    isOceanicRidge = (boundType == pygplates.FeatureType.gpml_mid_ocean_ridge)
     
-    #shareBoundXYZ = []
+    #Loop through shared subsegments and convert data to cartesian coordinates
     for sharedSubSection in shareBound.get_shared_sub_segments():
         latLon = sharedSubSection.get_resolved_geometry().to_lat_lon_array()
         lon, lat = latLon[:, 1], latLon[:, 0]
         XYZ = earthInit.lonLatToCartesian(lon, lat)
         
-        #shareBoundXYZ.append()
-        
-        #Append data to lists
-        #sharedPlateIds = [i.get_resolved_feature().get_reconstruction_plate_id() for i in sharedSubSection.get_sharing_resolved_topologies()]
+        #Append relevant data to lists
         for xyz in XYZ:
             boundaryXYZ.append(xyz)
             sharedBoundID.append(i)
@@ -66,85 +60,80 @@ for i, shareBound in enumerate(sharedBoundarySections):
             else:
                 boundaryType.append(0)
 
-boundaryXYZ, boundaryType = np.array(boundaryXYZ), np.array(boundaryType)
+#Convert lists to arrays
+boundaryXYZ, boundaryType  = np.array(boundaryXYZ), np.array(boundaryType)
+boundaryIndex = np.arange(boundaryXYZ.shape[0])
 boundaryXYZ *= earthRadius
 
-#distToBound, distToBoundID = KDTree(boundaryXYZ).query(sphereXYZ)
-#nearbyBoundType = boundaryType[distToBoundID]
-
-'''
-nextID = distToBoundID + 1
-nextID[nextID==np.max(nextID)] = 0
-prevID = distToBoundID - 1
-prevID[prevID==-1] = np.max(distToBoundID)
-'''
-boundaryId = np.arange(boundaryXYZ.shape[0])
-
+#For each line on plate boundaries, find the centres and create a list of lines by specifying the id of vertices that span it
 plotter = pv.Plotter()
-lineIds, lineCentres = [], []
+lineCentres, boundLines = [], []
 for i in np.unique(sharedBoundID):
     sharesThis = (i==sharedBoundID)
-    idx = boundaryId[sharesThis]
-    for line in np.array([idx[:-1], idx[1:]]).T.astype(int):
-        lineIds.append(line)
-        lineCentres.append(np.mean((boundaryXYZ[line[0]], boundaryXYZ[line[1]]), axis=0))
+    idx = boundaryIndex[sharesThis]
+    bLines = np.array([idx[:-1], idx[1:]]).T.astype(int)
+    if np.all(boundaryType[sharesThis] == 1):
+        for line in bLines:
+            boundLines.append(line)
+            lineCentres.append(np.mean((boundaryXYZ[line[0]], boundaryXYZ[line[1]]), axis=0))
     
+    #Add lines to pyvista plot
     lines = pyvistaLinesFromPoints(boundaryXYZ[idx])
     plotter.add_mesh(lines, color='b')
-lineIds = np.array(lineIds)
+
+#Convert lists to arrays
+boundLines = np.array(boundLines)
 lineCentres = np.array(lineCentres)
+#divergLines = boundLines
+#divergLineCentres = lineCentres
 
-distToLines, distToLineIds = KDTree(lineCentres).query(sphereXYZ)
-nearbyLinePoints = boundaryXYZ[lineIds[distToLineIds]]
+#Create a list of line segments represented by 2 xyz vertex coordinates
+distToLines, distToLinesIds = KDTree(lineCentres).query(sphereXYZ)
+lineSegmentXYZ = boundaryXYZ[boundLines[distToLinesIds]]
 
+#Find the distance of each sphere vertex from the plate boundaries
 distToBound = []
 for i, xyz in enumerate(sphereXYZ):
-    linePoints = nearbyLinePoints[i]
-    #numerator = np.linalg.norm(np.cross(xyz - linePoints[0], xyz - linePoints[1]))
-    #denominator = np.linalg.norm(linePoints[1] - linePoints[0])
-    numerator = np.linalg.norm(np.cross(linePoints[1] - xyz, linePoints[1] - linePoints[0]))
-    denominator = np.linalg.norm(linePoints[1] - linePoints[0])
-    distToLine = numerator / denominator
-    distToZero = np.linalg.norm(linePoints[0] - xyz)
-    distToOne = np.linalg.norm(linePoints[1] - xyz)
+    lineXYZ = lineSegmentXYZ[i]
     
-    v = linePoints[1] - linePoints[0]
-    w = xyz - linePoints[0]
+    #Append distance from vertex 0
+    v = lineXYZ[1] - lineXYZ[0]
+    w = xyz - lineXYZ[0]
     if np.dot(w, v) <= 0:
+        distToZero = np.linalg.norm(lineXYZ[0] - xyz)
         distToBound.append(distToZero)
+    
+    #Append distance from vertex 1  
     elif np.dot(v, v) <= np.dot(w, v):
+        distToOne = np.linalg.norm(lineXYZ[1] - xyz)
         distToBound.append(distToOne)
+    
+    #Append distance from somewhere in the line centre
     else:
+        numerator = np.linalg.norm(np.cross(lineXYZ[1] - xyz, lineXYZ[1] - lineXYZ[0]))
+        denominator = np.linalg.norm(lineXYZ[1] - lineXYZ[0])
+        distToLine = numerator / denominator
         distToBound.append(distToLine)
-    
-    
-    #distToBound.append(numerator / denominator)
 distToBound = np.array(distToBound)
 
-print(distToBound)
-print(nearbyLinePoints.shape)
-print(sphereXYZ.shape)
-
-
-
-
+#Initiate a heightmap a lower points nearby boundaries
 heightMap = np.zeros(sphereXYZ.shape[0])
-heightMap -= 400 / (1 + np.exp(distToBound/200))
+heightMap -= 400 / (1 + np.exp(distToBound/100))
 
+'''
 x = np.arange(0, 1000, 0.1)
 y = 1 / (1 + np.exp(x/200))
 plt.plot(x, y)
-#plt.plot(distToBound)
-#plt.show()
+plt.plot(distToBound)
+plt.show()
+'''
 
+#Create a mesh of the final terrain
 newSphereXYZ = earthInit.setRadialComponent(sphereXYZ, earthRadius+heightMap)
 newSphereMesh = pv.PolyData(newSphereXYZ, sphereFaces)
 
-        
-#plotter = pv.Plotter()
+#Plot the mesh
 plotter.add_mesh(newSphereMesh, scalars=heightMap)
 plotter.add_mesh(lineCentres)#, scalars=sharedBoundID)
 plotter.show()
 
-#print(nearbyBoundType[:10])
-#nearbyBoundType = np.sum(boundaryType[distToBoundID], axis=1)

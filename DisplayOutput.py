@@ -10,7 +10,7 @@ showPlateBounds = True
 earthRadius = 6371
 
 #Specify folder to read data from
-folderName = 'run2'
+folderName = 'run6'
 dataDirectory = './OutputXYZData/{}'.format(folderName)
 fileNameFormat = './OutputXYZData/{}/Time{}.csv'
 

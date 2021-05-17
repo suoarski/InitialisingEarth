@@ -134,16 +134,23 @@ def getPlateBoundaryData(time, topologyFeatures, rotationModel, earthRadius):
     subZoneXYZ, overridingPlateIds, subductingPlateIds = [], [], []
     boundXYZ, boundPlateIds = [], []
     ridgeXYZ, ridgeIds = [], []
+    boundaryType, shareBoundID = [], []
     
     #Get pygplates to resolve data at specified time
     resolvedTopologies, sharedBoundarySections = [], []
     pygplates.resolve_topologies(topologyFeatures, rotationModel, resolvedTopologies, int(time), sharedBoundarySections)
     
     #Loop through shared boundary sections and subsections
-    for shareBound in sharedBoundarySections:
+    for i, shareBound in enumerate(sharedBoundarySections):
         boundType = shareBound.get_feature().get_feature_type()
         isSubduction = boundType == pygplates.FeatureType.gpml_subduction_zone
         isOceanicRidge = boundType == pygplates.FeatureType.gpml_mid_ocean_ridge
+        bType = 0
+        if isOceanicRidge:
+            bType = 1
+        if isSubduction:
+            bType = 2
+        
         for sharedSubSection in shareBound.get_shared_sub_segments():
             
             #Get XYZ coordinates of shared subsections
@@ -156,6 +163,8 @@ def getPlateBoundaryData(time, topologyFeatures, rotationModel, earthRadius):
             for xyz in XYZ:
                 boundXYZ.append(xyz)
                 boundPlateIds.append(sharedPlateIds)
+                boundaryType.append(bType)
+                shareBoundID.append(i)
                 
                 #Append data for oceanic ridges
                 if isOceanicRidge:
@@ -179,7 +188,9 @@ def getPlateBoundaryData(time, topologyFeatures, rotationModel, earthRadius):
     ridgeXYZ = np.array(ridgeXYZ) * earthRadius
     overridingPlateIds = np.array(overridingPlateIds)
     subductingPlateIds = np.array(subductingPlateIds)
-    return (boundXYZ, subZoneXYZ, ridgeXYZ, boundPlateIds, overridingPlateIds, subductingPlateIds, ridgeIds)
+    boundaryType = np.array(boundaryType)
+    shareBoundID = np.array(shareBoundID)
+    return (boundXYZ, subZoneXYZ, ridgeXYZ, boundPlateIds, overridingPlateIds, subductingPlateIds, ridgeIds, boundaryType, shareBoundID)
 
 #Gets the reconstructed coastlines
 def getCoastlineXYZ(time, rotationModel, coastLinesDirectory):
@@ -613,7 +624,16 @@ def applyOceanFloors(sphereXYZ, heightMap, data, props, time, rotationModel):
     oceanDepth[oceanDepth < -maxDepth] = heightMap[isOcean][oceanDepth < -maxDepth]
     heightMap[isOcean] = oceanDepth
     return heightMap
-    
+
+#Creates lines as pyvista mesh
+def pyvistaLinesFromPoints(points):
+    poly = pv.PolyData()
+    poly.points = points
+    the_cell = np.arange(0, len(points), dtype=np.int_)
+    the_cell = np.insert(the_cell, 0, len(points))
+    poly.lines = the_cell
+    return poly
+
 #============================ Main Code =====================================================================================================
 #Function for running the main simulation. It can be called from other python scripts to batch run simulations.
 #All simulation properties are contained in the dictionary 'props'
@@ -661,6 +681,8 @@ def runMainTectonicSimulation(props):
         data['OverridingPlateIds'] = boundaryData[4]
         data['SubductingPlateIds'] = boundaryData[5]
         data['RidgeIds'] = boundaryData[6]
+        data['boundaryType'] = boundaryData[7]
+        data['shareBoundID'] = boundaryData[8]
         dataAtTimes.append(data)
     
     #Initialize earth
@@ -725,10 +747,84 @@ def runMainTectonicSimulation(props):
         uplift = heightTrans * distanceTrans * subSpeedTransfer
         heightMap += props['baseSubductionUplift'] * props['deltaTime'] * uplift
         
+        
+        
+        
+        
+        
+        
+        
+        '''
         #When continental plates diverge, we decrease the height at the continental ridge until it becomes an ocean
         ridgeToVertexID = data['ridgeToVertexID']
         vertexIsOnLand = (heightMap[ridgeToVertexID.flatten()] > props['isOceanThreshold'])
         heightMap[ridgeToVertexID.flatten()] -= props['loweringRate'] * props['deltaTime'] * vertexIsOnLand
+        '''
+        
+        boundaryType = data['boundaryType']
+        sharedBoundID = data['shareBoundID']
+        boundaryIndex = np.arange(plateBounds.shape[0])
+        
+        lineCentres, boundLines, lineMesh = [], [], []
+        for i in np.unique(sharedBoundID):
+            sharesThis = (i==sharedBoundID)
+            idx = boundaryIndex[sharesThis]
+            bLines = np.array([idx[:-1], idx[1:]]).T.astype(int)
+            if np.all(boundaryType[sharesThis] == 1):
+                for line in bLines:
+                    boundLines.append(line)
+                    lineCentres.append(np.mean((plateBounds[line[0]], plateBounds[line[1]]), axis=0))
+            
+            #Add lines to pyvista plot
+            #print(plateBounds.shape)
+            #print(idx)
+            #for line in pyvistaLinesFromPoints(plateBounds[idx]):
+                #lineMesh.append(line)
+        boundLines = np.array(boundLines)
+        lineCentres = np.array(lineCentres)
+        
+        #Create a list of line segments represented by 2 xyz vertex coordinates
+        distToLines, distToLinesIds = KDTree(lineCentres).query(sphereXYZ)
+        lineSegmentXYZ = plateBounds[boundLines[distToLinesIds]]
+        
+        #Find the distance of each sphere vertex from the plate boundaries
+        distToBound = []
+        for i, xyz in enumerate(sphereXYZ):
+            lineXYZ = lineSegmentXYZ[i]
+            
+            #Append distance from vertex 0
+            v = lineXYZ[1] - lineXYZ[0]
+            w = xyz - lineXYZ[0]
+            if np.dot(w, v) <= 0:
+                distToZero = np.linalg.norm(lineXYZ[0] - xyz)
+                distToBound.append(distToZero)
+            
+            #Append distance from vertex 1  
+            elif np.dot(v, v) <= np.dot(w, v):
+                distToOne = np.linalg.norm(lineXYZ[1] - xyz)
+                distToBound.append(distToOne)
+            
+            #Append distance from somewhere in the line centre
+            else:
+                numerator = np.linalg.norm(np.cross(lineXYZ[1] - xyz, lineXYZ[1] - lineXYZ[0]))
+                denominator = np.linalg.norm(lineXYZ[1] - lineXYZ[0])
+                distToLine = numerator / denominator
+                distToBound.append(distToLine)
+        distToBound = np.array(distToBound)
+        divergeLowering = 300 / (1 + np.exp(distToBound/60))
+        heightMap -= divergeLowering * (heightMap > props['isOceanThreshold'])
+        
+        #ridgeToVertexID = data['ridgeToVertexID']
+        #vertexIsOnLand = (heightMap[ridgeToVertexID.flatten()] > props['isOceanThreshold'])
+        
+        #heightMap[ridgeToVertexID.flatten()] -= props['loweringRate'] * props['deltaTime'] * vertexIsOnLand
+        #print(heightMap.shape)
+        #print(divergeLowering.shape)
+        #print(vertexIsOnLand)
+        #heightMap[vertexIsOnLand] -= divergeLowering[vertexIsOnLand]
+            
+        
+        
         
         #Move plates and remesh using interpolation
         heightMap = movePlatesAndRemeshSphere(sphereXYZ, heightMap, time, rotationModel, data, props)
@@ -825,10 +921,10 @@ if __name__ == '__main__':
     props['coastLinesDirectory'] = './Matthews_etal_GPC_2016_Coastlines.gpmlz'
 
     #Set the time range of simulation and time steps
-    props['timeFrom'], props['timeTo'], props['deltaTime'] = 100, 0, 5
+    props['timeFrom'], props['timeTo'], props['deltaTime'] = 200, 0, 5
 
     #General earth properties
-    props['resolution'] = 100 #Resolution of sphere
+    props['resolution'] = 400 #Resolution of sphere
     props['earthRadius'] = 6371 #Radius of the earth in kilometres
     props['heightAmplificationFactor'] = 60 #For visualization, we amplify the height to make topography more visible
 

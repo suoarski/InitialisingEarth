@@ -103,6 +103,15 @@ def createXYZOutputDirectory(props, directory='./OutputXYZData'):
             file.write('{}: {}\n'.format(k, str(props[k])))
     return outputDirectory
 
+#Creates lines as pyvista mesh
+def pyvistaLinesFromPoints(points):
+    poly = pv.PolyData()
+    poly.points = points
+    the_cell = np.arange(0, len(points), dtype=np.int_)
+    the_cell = np.insert(the_cell, 0, len(points))
+    poly.lines = the_cell
+    return poly
+
 #========================================Code Related to pygplates ================================================================
 #Creates a list of point features from our sphere's coordinates to be used by pygplates
 def createPointFeatures(lon, lat):
@@ -128,22 +137,31 @@ def getPlateIdsAtTime(time, rotationModel, pointFeatures, platePolygonsDirectory
     return np.array(featureIds)
 
 #Returns plate boundary, subduction zone and oceanic ridge data
+#Note: I should come up with a more flexible system for representing boundary data
+#For now I have too many single use lists
 def getPlateBoundaryData(time, topologyFeatures, rotationModel, earthRadius):
     
     #Initiate lists to be returned
     subZoneXYZ, overridingPlateIds, subductingPlateIds = [], [], []
     boundXYZ, boundPlateIds = [], []
     ridgeXYZ, ridgeIds = [], []
+    boundaryType, shareBoundID = [], []
     
     #Get pygplates to resolve data at specified time
     resolvedTopologies, sharedBoundarySections = [], []
     pygplates.resolve_topologies(topologyFeatures, rotationModel, resolvedTopologies, int(time), sharedBoundarySections)
     
     #Loop through shared boundary sections and subsections
-    for shareBound in sharedBoundarySections:
+    for i, shareBound in enumerate(sharedBoundarySections):
         boundType = shareBound.get_feature().get_feature_type()
         isSubduction = boundType == pygplates.FeatureType.gpml_subduction_zone
         isOceanicRidge = boundType == pygplates.FeatureType.gpml_mid_ocean_ridge
+        bType = 0
+        if isOceanicRidge:
+            bType = 1
+        if isSubduction:
+            bType = 2
+        
         for sharedSubSection in shareBound.get_shared_sub_segments():
             
             #Get XYZ coordinates of shared subsections
@@ -156,6 +174,8 @@ def getPlateBoundaryData(time, topologyFeatures, rotationModel, earthRadius):
             for xyz in XYZ:
                 boundXYZ.append(xyz)
                 boundPlateIds.append(sharedPlateIds)
+                boundaryType.append(bType)
+                shareBoundID.append(i)
                 
                 #Append data for oceanic ridges
                 if isOceanicRidge:
@@ -179,9 +199,11 @@ def getPlateBoundaryData(time, topologyFeatures, rotationModel, earthRadius):
     ridgeXYZ = np.array(ridgeXYZ) * earthRadius
     overridingPlateIds = np.array(overridingPlateIds)
     subductingPlateIds = np.array(subductingPlateIds)
-    return (boundXYZ, subZoneXYZ, ridgeXYZ, boundPlateIds, overridingPlateIds, subductingPlateIds, ridgeIds)
+    boundaryType = np.array(boundaryType)
+    shareBoundID = np.array(shareBoundID)
+    return (boundXYZ, subZoneXYZ, ridgeXYZ, boundPlateIds, overridingPlateIds, subductingPlateIds, ridgeIds, boundaryType, shareBoundID)
 
-#Gets the reconstructed coastlines
+#Gets the reconstructed coastlines, mainly used for initializing continents
 def getCoastlineXYZ(time, rotationModel, coastLinesDirectory):
     reconstructedCoastlines = []
     Lat, Lon = [], []
@@ -236,7 +258,6 @@ def getIsContinent(time, rotationModel, pointFeatures, coastLinesDirectory):
             for i in data:
                 file.write('{}\n'.format(i))
     return data.astype(bool)
-
     
 
 #==============================================Speeds ========================================================================
@@ -276,12 +297,11 @@ def getRidgeSpreadingSpeeds(data, props, time, rotationModel):
     
 #======================================Code for Oceanic Ridge ===========================================================================
 #Applies ocean depth based on equation from patrice's email
-def applyOceanDepth(sphereXYZ, oceanicRidgeXYZ, heightMap, isOcean, spreadingSpeed, props):
-    maxDepth = props['oceanDepth']
-    ageProportion = props['ageProportion']
-    ridgeDepth = props['ridgeDepth']
+def initiateOceans(data, sphereXYZ, oceanicRidgeXYZ, heightMap, isOcean, spreadingSpeed, props):
+    maxDepth, ageProportion, ridgeDepth = props['oceanDepth'], props['ageProportion'], props['ridgeDepth']
+    distToRidge, closeRidgeID = data['distToDiverge'], data['distToDivergeIDs']
+    distToRidge, closeRidgeID = distToRidge[isOcean], closeRidgeID[isOcean]
     
-    distToRidge, closeRidgeID = KDTree(oceanicRidgeXYZ).query(sphereXYZ[isOcean])
     oceanFloorAge = np.abs(distToRidge) / (spreadingSpeed[closeRidgeID])
     oceanDepth = - (ridgeDepth + ageProportion * oceanFloorAge**0.5)
     oceanDepth[oceanDepth < -maxDepth] = -maxDepth
@@ -289,58 +309,12 @@ def applyOceanDepth(sphereXYZ, oceanicRidgeXYZ, heightMap, isOcean, spreadingSpe
     return heightMap
 
 #======================================Code for Subduction ===========================================================================
-
 #The height transfer function is given by the sigmoid function
-def sigmoid(x, props):#pointToPassThrough=(0, 0.01), centre=2.0):
+def sigmoid(x, props):
     pointToPassThrough, centre = props['pointToPassThrough'], props['centre']
     xPass, yPass = pointToPassThrough[0], pointToPassThrough[1]
     spread = (centre - xPass) / np.log((1/yPass) - 1)
     return 1 / (1 + np.exp((centre - x) / spread))
-
-#The distance transfer defines how much uplift we should apply to a point based on the points distance from a subdcution zone
-#To Do: I can greatly simplify this using interpolation
-def distanceTransfer(x, slopeUp=2.0, slopeDown=0.5, maxRange=1.0, maxHeight=1.0):
-    m1 = np.abs(slopeUp)
-    m2 =  - np.abs(slopeDown)
-    t = 0.5 * (maxRange + maxHeight * ((1/m1) + (1/m2)))
-    y = np.zeros(x.shape)
-    
-    trapezoidalCase = m1 * t > maxHeight
-    triangleCase = 1 - trapezoidalCase
-        
-    #The first line
-    y1 = x * m1
-    y1 *= (x < maxHeight / m1)
-
-    #The second line
-    plateauLength = (m1 * t - maxHeight) * 2
-    y2 = np.ones(x.shape) * maxHeight
-    y2 *= (x >= maxHeight / m1) * (x < (maxHeight + plateauLength) / m1)
-
-    #The third line
-    y3 = x * m2 + maxHeight - m2 * (maxHeight + plateauLength) / m1
-    y3 *= (x >= (maxHeight + plateauLength) / m1)
-
-    #Add the lines together and set negative values to zero
-    y = y1 + y2 + y3
-    y *= (y >= 0) * trapezoidalCase
-    
-    #The triangle case
-    #else:
-    t = (- m2 * maxRange) / (m1 - m2)
-    
-    #The first line
-    y1 = x * m1
-    y1 *= (x < t)
-    
-    #The second line
-    y2 = (m2 * x + t * (m1 - m2))
-    y2 *= (x >= t)
-    
-    #Add the lines together and set negative values to zero
-    yTriangle = y1 + y2
-    yTriangle *= (yTriangle >= 0) * triangleCase
-    return y + yTriangle
 
 #For each point on the sphere, we get the distance to the subzones out of those that are still on the same plate
 def getDistancesFromSubZones(sphereXYZ, subZoneXYZ, plateIds, overridingPlateIds):
@@ -352,40 +326,42 @@ def getDistancesFromSubZones(sphereXYZ, subZoneXYZ, plateIds, overridingPlateIds
             distances[plateIds == idx] = subKDTree.query(sphereXYZ[plateIds == idx])[0]
     return distances
 
-
-#Function for showing alternative plots
-def showAlternativePlots(props, showUpliftTemplate, showContShelfTemplate, showHeightTransfer, showMeltingProfile):
+#Function for showing alternative plots, only used when editing properties
+def showAlternativePlots(props):
     exit=False
-    if showHeightTransfer:
+    if props['showHeightTransfer']:
+        oceanDepth = props['oceanDepth']
+        maxMountainHeight = props['maxMountainHeight']
         x = np.arange(-oceanDepth, maxMountainHeight, (maxMountainHeight+oceanDepth)/1000)
-        y = sigmoid(x, pointToPassThrough=pointToPass, centre=cent)
+        y = sigmoid(x, props)
         plt.plot(x, y)
         plt.show()
         exit = True
     
-    if showUpliftTemplate:
+    if props['showUpliftTemplate']:
         x = np.arange(0, 1, 0.01)
         y = props['upliftTemplate'](x)
         plt.plot(x, y)
         plt.show()
         exit = True
     
-    if showContShelfTemplate:
+    if props['showContShelfTemplate']:
         x = np.arange(0, 1, 0.01)
         y = props['continentalShelfTemplate'](x)
         plt.plot(x, y)
         plt.show()
         exit = True
-    '''
-    if showMeltingTemplate:
-        x = np.arange(0, 1, 0.01)
-        y = meltingTemplate(x)
+    
+    if props['showDivergingContinentProfile']:
+        rate = props['divergingContinentLoweringRate']
+        rnge = props['divergingContinentLoweringRange']
+        x = np.arange(1000)
+        y = rate / (1 + np.exp(5*x / rnge))
         plt.plot(x, y)
         plt.show()
         exit = True
-    '''
     
-    if showMeltingProfile:
+    if props['showMeltingProfile']:
         x = np.arange(props['weightInfluenceRange'])
         y = 1 / (np.exp((x - props['meltingSigmoidCentre']) * props['meltingSigmoidSteepness']) + 1)
         plt.plot(x, y)
@@ -395,13 +371,14 @@ def showAlternativePlots(props, showUpliftTemplate, showContShelfTemplate, showH
     if exit:
         sys.exit("We don't run the main code when showing alternative plots")
 
+#Creates the initial topography before runnning the simulation
 def initializeEarth(sphereXYZ, rotationModel, data, props):
     coastLinesDirectory = props['coastLinesDirectory']
     oceanShelfLength = props['oceanShelfLength']
     oceanDepth = props['oceanDepth']
     timeFrom = props['timeFrom']
     
-    #Create initial heightMap of zeros and get other data we need for initializing earth
+    #Collect and initiate data that we will need
     heightMap = np.zeros(len(sphereXYZ))
     sphereLon, sphereLat = cartesianToLonLat(sphereXYZ[:, 0], sphereXYZ[:, 1], sphereXYZ[:, 2])
     pointFeatures = createPointFeatures(sphereLon, sphereLat)
@@ -414,7 +391,7 @@ def initializeEarth(sphereXYZ, rotationModel, data, props):
     #Apply ocean floors
     spreadingSpeed = getRidgeSpreadingSpeeds(data, props, timeFrom, rotationModel) 
     spreadingSpeed[spreadingSpeed == 0] = 0.0001 #Avoid division by zero
-    heightMap = applyOceanDepth(sphereXYZ, data['RidgeXYZ'], heightMap, isOcean, spreadingSpeed, props)
+    heightMap = initiateOceans(data, sphereXYZ, data['RidgeXYZ'], heightMap, isOcean, spreadingSpeed, props)
     
     #Apply mountain heights nearby subduction regions
     distToSubZone, closeSubzoneID = KDTree(data['SubZOneXYZ']).query(sphereXYZ[isContinent])
@@ -426,46 +403,6 @@ def initializeEarth(sphereXYZ, rotationModel, data, props):
     isCloseEnough = distToCoast < oceanShelfLength
     heightMap[isOcean] = props['continentalShelfTemplate'](distToCoast / oceanShelfLength) * oceanDepth * (isCloseEnough) + heightMap[isOcean] * (1 - isCloseEnough)
     return heightMap
-
-
-#Anything that we wish to run over multiple CPUs, should be called here
-
-#Anything that we can calculate before running the main simulation should be called here
-#Multiple CPUs will run this function in parallel, but the CPUs can not communicate with each other
-#We also can't pass too complicated objects to this function
-def functionToParralelize(iteration, sphereXYZ, props, time):
-    platePolygonsDirectory = props['platePolygonsDirectory']
-    numberToAverageOver = props['numberToAverageOver']
-    rotFileLoc = props['rotationsDirectory']
-    deltaTime = props['deltaTime']
-    if time > 250:
-        platePolygonsDirectory = props['platePolygonsDirectory400MYA']
-    
-    #Create pygplates objects
-    rotationModel = pygplates.RotationModel(rotFileLoc)
-    sphereLon, sphereLat = cartesianToLonLat(sphereXYZ[:, 0], sphereXYZ[:, 1], sphereXYZ[:, 2])
-    pointFeatures = createPointFeatures(sphereLon, sphereLat)
-    
-    #General data obtained from pygplates
-    plateIds = getPlateIdsAtTime(time, rotationModel, pointFeatures, platePolygonsDirectory) 
-    boundaryData = getPlateBoundaryData(time, platePolygonsDirectory, rotationModel, props['earthRadius'])
-    
-    #Data about subduction and oceanic ridges
-    distIds = KDTree(boundaryData[1]).query(sphereXYZ, k=numberToAverageOver)[1]
-    subSpeedTransfer, speedsOfCollision = getSubductingSpeed(sphereXYZ, boundaryData, rotationModel, time-deltaTime, time, numberToAverageOver, distIds)
-    distToSub = getDistancesFromSubZones(sphereXYZ, boundaryData[1], plateIds, boundaryData[4])
-    isOveriding = np.isin(plateIds, np.unique(boundaryData[4]))
-    
-    ridgeToVertexID = KDTree(sphereXYZ).query(boundaryData[2], k=props['resolution'] // props['divergingContinentLoweringRange'])[1]
-    
-    #distToRidge, distToRidgeID = KDTree(boundaryData[2]).query(sphereXYZ)
-    #ridgeToVertexID = distToRidgeID[distToRidge <= props['divergingContinentLoweringRange']]
-    
-    #Used for moving plates and remeshing sphere
-    movedSphereXYZ = movePlates(rotationModel, sphereXYZ, plateIds, time, deltaTime)
-    distToSubZoneFromMovedSphere = KDTree(boundaryData[0]).query(movedSphereXYZ)[0]
-    return (iteration, boundaryData, plateIds, subSpeedTransfer, speedsOfCollision, distToSub, 
-            isOveriding, ridgeToVertexID, movedSphereXYZ, distToSubZoneFromMovedSphere)
 
 #Move tectonic plates along the sphere
 def movePlates(rotationModel, sphereXYZ, plateIds, time, deltaTime):
@@ -480,7 +417,6 @@ def movePlates(rotationModel, sphereXYZ, plateIds, time, deltaTime):
     return newSphere
 
 #We use the griddata interpolation from the scipy library to remesh our sphere whilst maintianing heights
-#def movePlatesAndRemeshSphere(sphereXYZ, heightMap, plateIds, time, deltaTime,  rotationModel, plateBoundsXYZ, boundIds):
 def movePlatesAndRemeshSphere(sphereXYZ, heightMap, time, rotationModel, data, props):
     distToSubZone = data['distToSubZoneFromMovedSphere']
     movedSphereXYZ = data['movedSphereXYZ']
@@ -524,47 +460,8 @@ def movePlatesAndRemeshSphere(sphereXYZ, heightMap, time, rotationModel, data, p
     interpolatedHeights[whereNAN] = griddata(movedLonLat, heightMap, sphereLonLat[whereNAN], method='nearest')
     return interpolatedHeights
 
-#When mountains become too high, we reduce height and increase breadth of the mountain
-def meltMountains(sphereXYZ, heightMap, subSpeedTransfer, props):
-    maxMeltingDistance = props['maxMeltingDistance']
-    baseMeltingUplift = props['baseMeltingUplift']
-    heightThreshold = props['heightThreshold']
-    gravityStrength = props['gravityStrength']
-    
-    #Get points on mountains that are too high
-    isTooHigh = (heightMap > heightThreshold)
-    tooHighXYZ = sphereXYZ[isTooHigh]
-    tooHighHeights = heightMap[isTooHigh]
-    
-    #Stop runnning this function if there are no vertices above the height threshold
-    if len(tooHighXYZ) == 0:
-        return heightMap
-    
-    #Find clusters of too high vertices which will be considered as one mountain range each
-    spacing = (2 * 2 * np.pi * props['earthRadius'] / props['resolution'])
-    cluster = DBSCAN(eps=spacing, min_samples=1).fit(tooHighXYZ)
-    clusterIds = cluster.labels_
-    
-    #For each cluster, we find the volume of moutain above threshold
-    for idx in np.unique(clusterIds):
-        volumeAboveThreshold = np.sum(tooHighHeights[clusterIds == idx] - heightThreshold)
-        
-        #Then we find surounding points on mountain foot
-        distToMountain, distToMountIds = KDTree(tooHighXYZ[clusterIds == idx]).query(sphereXYZ)
-        isInMeltingRange = ((distToMountain < maxMeltingDistance) * (distToMountain != 0)).astype(bool)
-        
-        #Then we increase the heights of points at the foot of the mountain
-        numOfPointsInCluster = len(clusterIds[clusterIds == idx])
-        meltingUplift = meltingTemplate(distToMountain[isInMeltingRange] / maxMeltingDistance)
-        meltingUplift = baseMeltingUplift * meltingUplift * volumeAboveThreshold / numOfPointsInCluster
-        heightMap[isInMeltingRange] += meltingUplift * subSpeedTransfer[isInMeltingRange]
-    
-    #Points that are above the height threshold are then decreased by a bit
-    heightMap -= gravityStrength * (heightMap > heightThreshold) * (heightMap - heightThreshold)**2
-    return heightMap
 
-
-#Returns the displacement of height due to melting mountains
+#Returns the displacement of height due to melting mountains (mountains collapsing under their own weight)
 def getMeltingUplift(XYZ, hMap, dists, props):
     weightRange = props['weightInfluenceRange']
     sigmoidCent = props['meltingSigmoidCentre']
@@ -572,13 +469,13 @@ def getMeltingUplift(XYZ, hMap, dists, props):
     
     hMap = normalizeArray(hMap)
     r, theta, phi = cartesianToPolarCoords(XYZ[:, 0], XYZ[:, 1], XYZ[:, 2])
-    integrationConstant = np.sin(phi)
+    integrationScaleFactor = np.sin(phi)
     upliftField = np.zeros(len(XYZ))
     for i in range(len(XYZ)):
         dist = dists[i]
         isCloseEnough = ((dist <= weightRange) * (dist != 0)).astype(bool)
         nearbyAverage = np.mean(hMap[isCloseEnough])
-        numerator = (nearbyAverage - hMap[isCloseEnough]) * integrationConstant[isCloseEnough]
+        numerator = (nearbyAverage - hMap[isCloseEnough]) * integrationScaleFactor[isCloseEnough]
         denominator = np.exp((dist[isCloseEnough] - sigmoidCent) * sigmoidSteep) + 1
         upliftField[isCloseEnough] += numerator / denominator
     return upliftField
@@ -586,6 +483,7 @@ def getMeltingUplift(XYZ, hMap, dists, props):
 
     
 #Apply ocean floors based on equation from patrices email
+#Note: At the moment, ocean floors jump around in depth way too much, need to fix this
 def applyOceanFloors(sphereXYZ, heightMap, data, props, time, rotationModel):
     isOceanThreshold = props['isOceanThreshold']
     oceanShelfLength = props['oceanShelfLength']
@@ -607,13 +505,94 @@ def applyOceanFloors(sphereXYZ, heightMap, data, props, time, rotationModel):
     isOcean[isOcean] = isFarFromLand
     
     #Apply ocean floors
-    distToRidge, closeRidgeID = KDTree(data['RidgeXYZ']).query(sphereXYZ[isOcean])
+    distToRidge, closeRidgeID = data['distToDiverge'], data['distToDivergeIDs']
+    distToRidge, closeRidgeID = distToRidge[isOcean], closeRidgeID[isOcean]
     oceanFloorAge = np.abs(distToRidge) / (spreadingSpeed[closeRidgeID])
     oceanDepth = - (ridgeDepth + ageProportion * oceanFloorAge**0.5)
     oceanDepth[oceanDepth < -maxDepth] = heightMap[isOcean][oceanDepth < -maxDepth]
     heightMap[isOcean] = oceanDepth
     return heightMap
+
+#This function gets distance to boundaries where the boundary is treated as lines rather than points from pygplates
+#Note: I should use this strategy more often
+def getDistanceToBoundary(sphereXYZ, plateBounds, boundaryType, sharedBoundID):
+    boundaryIndex = np.arange(plateBounds.shape[0])
     
+    #We loop through each shared boundary (as provided by pygplates)
+    #To get a list of diverging boundary lines
+    lineCentres, boundLines, lineMesh = [], [], []
+    for i in np.unique(sharedBoundID):
+        isOnThisBoundary = (i==sharedBoundID)
+        idx = boundaryIndex[isOnThisBoundary]
+        bLines = np.array([idx[:-1], idx[1:]]).T.astype(int)
+        if np.all(boundaryType[isOnThisBoundary] == 1):
+            for line in bLines:
+                boundLines.append(line)
+                lineCentres.append(np.mean((plateBounds[line[0]], plateBounds[line[1]]), axis=0))
+    boundLines = np.array(boundLines)
+    lineCentres = np.array(lineCentres)
+    
+    #Create a list of line segments represented by 2 xyz vertex coordinates
+    distToLinesIds = KDTree(lineCentres).query(sphereXYZ)[1]
+    lineSegmentXYZ = plateBounds[boundLines[distToLinesIds]]
+    
+    #Find the distance of each sphere vertex from the plate boundaries
+    distToBound = []
+    for i, xyz in enumerate(sphereXYZ):
+        lineXYZ = lineSegmentXYZ[i]
+        
+        #Append distance from vertex 0
+        v = lineXYZ[1] - lineXYZ[0]
+        w = xyz - lineXYZ[0]
+        if np.dot(w, v) <= 0:
+            distToZero = np.linalg.norm(lineXYZ[0] - xyz)
+            distToBound.append(distToZero)
+        
+        #Append distance from vertex 1  
+        elif np.dot(v, v) <= np.dot(w, v):
+            distToOne = np.linalg.norm(lineXYZ[1] - xyz)
+            distToBound.append(distToOne)
+        
+        #Append distance from somewhere in the line centre
+        else:
+            numerator = np.linalg.norm(np.cross(lineXYZ[1] - xyz, lineXYZ[1] - lineXYZ[0]))
+            denominator = np.linalg.norm(lineXYZ[1] - lineXYZ[0])
+            distToLine = numerator / denominator
+            distToBound.append(distToLine)
+    return np.array(distToBound), distToLinesIds
+
+#Anything that we can calculate before running the main simulation should be called here
+#Multiple CPUs will run this function in parallel, but the CPUs can not communicate with each other
+#We also can't pass too complicated objects to this function
+def functionToParralelize(iteration, sphereXYZ, props, time):
+    platePolygonsDirectory = props['platePolygonsDirectory']
+    numberToAverageOver = props['numberToAverageOver']
+    rotFileLoc = props['rotationsDirectory']
+    deltaTime = props['deltaTime']
+    if time > 250:
+        platePolygonsDirectory = props['platePolygonsDirectory400MYA']
+    
+    #Create pygplates objects
+    rotationModel = pygplates.RotationModel(rotFileLoc)
+    sphereLon, sphereLat = cartesianToLonLat(sphereXYZ[:, 0], sphereXYZ[:, 1], sphereXYZ[:, 2])
+    pointFeatures = createPointFeatures(sphereLon, sphereLat)
+    
+    #General data obtained from pygplates
+    plateIds = getPlateIdsAtTime(time, rotationModel, pointFeatures, platePolygonsDirectory) 
+    boundaryData = getPlateBoundaryData(time, platePolygonsDirectory, rotationModel, props['earthRadius'])
+    
+    #Data about subduction and oceanic ridges
+    distIds = KDTree(boundaryData[1]).query(sphereXYZ, k=numberToAverageOver)[1]
+    subSpeedTransfer, speedsOfCollision = getSubductingSpeed(sphereXYZ, boundaryData, rotationModel, time-deltaTime, time, numberToAverageOver, distIds)
+    distToSub = getDistancesFromSubZones(sphereXYZ, boundaryData[1], plateIds, boundaryData[4])
+    isOveriding = np.isin(plateIds, np.unique(boundaryData[4]))
+    distToDiverge, distToDivergeIDs = getDistanceToBoundary(sphereXYZ, boundaryData[0], boundaryData[7], boundaryData[8])
+    
+    #Used for moving plates and remeshing sphere
+    movedSphereXYZ = movePlates(rotationModel, sphereXYZ, plateIds, time, deltaTime)
+    distToSubZoneFromMovedSphere = KDTree(boundaryData[0]).query(movedSphereXYZ)[0]
+    return (iteration, boundaryData, plateIds, subSpeedTransfer, speedsOfCollision, distToSub, 
+            isOveriding, movedSphereXYZ, distToSubZoneFromMovedSphere, distToDiverge, distToDivergeIDs)
 #============================ Main Code =====================================================================================================
 #Function for running the main simulation. It can be called from other python scripts to batch run simulations.
 #All simulation properties are contained in the dictionary 'props'
@@ -649,9 +628,10 @@ def runMainTectonicSimulation(props):
         data['SpeedOfCollision'] = i[4]
         data['DistToSubzones'] = i[5]
         data['IsOveriding'] = i[6]
-        data['ridgeToVertexID'] = i[7]
-        data['movedSphereXYZ'] = i[8]
-        data['distToSubZoneFromMovedSphere'] = i[9]
+        data['movedSphereXYZ'] = i[7]
+        data['distToSubZoneFromMovedSphere'] = i[8]
+        data['distToDiverge'] = i[9]
+        data['distToDivergeIDs'] = i[10]
         
         boundaryData = i[1]
         data['BoundaryXYZ'] = boundaryData[0]
@@ -661,6 +641,8 @@ def runMainTectonicSimulation(props):
         data['OverridingPlateIds'] = boundaryData[4]
         data['SubductingPlateIds'] = boundaryData[5]
         data['RidgeIds'] = boundaryData[6]
+        data['boundaryType'] = boundaryData[7]
+        data['shareBoundID'] = boundaryData[8] 
         dataAtTimes.append(data)
     
     #Initialize earth
@@ -725,10 +707,12 @@ def runMainTectonicSimulation(props):
         uplift = heightTrans * distanceTrans * subSpeedTransfer
         heightMap += props['baseSubductionUplift'] * props['deltaTime'] * uplift
         
-        #When continental plates diverge, we decrease the height at the continental ridge until it becomes an ocean
-        ridgeToVertexID = data['ridgeToVertexID']
-        vertexIsOnLand = (heightMap[ridgeToVertexID.flatten()] > props['isOceanThreshold'])
-        heightMap[ridgeToVertexID.flatten()] -= props['loweringRate'] * props['deltaTime'] * vertexIsOnLand
+        #When continents diverge, we lower at the diverging area to leave oceans behind
+        loweringRate = props['divergingContinentLoweringRate']
+        loweringRange = props['divergingContinentLoweringRange']
+        divergeLowering = loweringRate / (1 + np.exp(5 * data['distToDiverge'] / loweringRange))
+        heightMap -= divergeLowering * (heightMap > props['isOceanThreshold'])
+        heightMap[heightMap<-5.5] = -5.5
         
         #Move plates and remesh using interpolation
         heightMap = movePlatesAndRemeshSphere(sphereXYZ, heightMap, time, rotationModel, data, props)
@@ -770,7 +754,7 @@ def runMainTectonicSimulation(props):
 
 
         
-#=============================Template Profile Curves ================================================================================
+#=============================Simulation Properties and Profile Curves =====================================================================
 #
 #To stop multiple CPUs from running our main code during parallelization, we check that the scope is __main__
 if __name__ == '__main__':
@@ -794,7 +778,7 @@ if __name__ == '__main__':
         [100.0, 0.0]
         ])
     props['upliftTemplate'] = interp1d(upliftTemplatePoints[:, 0], upliftTemplatePoints[:, 1], kind='quadratic')
-    showUpliftTemplate = False
+    props['showUpliftTemplate'] = False
     
     #Template curve for continental shelves
     continentalShelfPoints = np.array([
@@ -815,9 +799,8 @@ if __name__ == '__main__':
         ])
     continentalShelfPoints[:, 1] /= 5.5
     props['continentalShelfTemplate'] = interp1d(continentalShelfPoints[:, 0], continentalShelfPoints[:, 1], kind='quadratic')
-    showContShelfTemplate = False
+    props['showContShelfTemplate'] = False
     
-    #============================================== Simulation Properties ==================================================
     #Directory for data files
     props['platePolygonsDirectory'] = './Matthews_etal_GPC_2016_MesozoicCenozoic_PlateTopologies_PMAG.gpmlz'
     props['platePolygonsDirectory400MYA'] = './Matthews_etal_GPC_2016_Paleozoic_PlateTopologies_PMAG.gpmlz'
@@ -825,7 +808,7 @@ if __name__ == '__main__':
     props['coastLinesDirectory'] = './Matthews_etal_GPC_2016_Coastlines.gpmlz'
 
     #Set the time range of simulation and time steps
-    props['timeFrom'], props['timeTo'], props['deltaTime'] = 100, 0, 5
+    props['timeFrom'], props['timeTo'], props['deltaTime'] = 100, 90, 5
 
     #General earth properties
     props['resolution'] = 100 #Resolution of sphere
@@ -837,9 +820,9 @@ if __name__ == '__main__':
     props['maxMountainHeight'] = 8 #Max mountain height (Only used in earth initialization)
     props['baseSubductionUplift'] = 0.3 #Defines how fast mountains grow due to subduction
     props['numberToAverageOver'] = 40 #The speed transfer takes the average collision speed of several nearby subduction regions
-    props['pointToPassThrough'] = (0, 0.05) #Our height transfer is defined by a sigmoid that passes through this point
-    props['centre'] = 3.0 #Our height transfer is a sigmoid with this as it's centre
-    showHeightTransfer = False
+    props['pointToPassThrough'] = (0, 0.15) #Our height transfer is defined by a sigmoid that passes through this point
+    props['centre'] = 2.0 #Our height transfer is a sigmoid with this as it's centre
+    props['showHeightTransfer'] = False
 
     #Used for defining depth of oceanic ridges
     props['oceanDepth'] = 5.5
@@ -849,24 +832,25 @@ if __name__ == '__main__':
     props['isOceanThreshold'] = -1.0 #For the purpose of our algorithm, we identify oceans to be lower than 0, it gives better results
 
     #When continents diverge, we lower the land around the diverging boundary until it becomes an ocean
-    props['divergingContinentLoweringRange'] = 80
-    props['loweringRate'] = 0.4
+    props['divergingContinentLoweringRate'] = 70
+    props['divergingContinentLoweringRange'] = 300
+    props['showDivergingContinentProfile'] = False
 
     #Melting mountains refers to mountains collapsing under their own weight over time
     props['meltingRate'] = 0.005
     props['weightInfluenceRange'] = 1000
     props['meltingSigmoidCentre'] = 500
     props['meltingSigmoidSteepness'] = 1/140
-    showMeltingProfile = False
+    props['showMeltingProfile'] = False
 
     #Some control parameters for how we want the simulation to run
     props['autoRunSimulation'] = True #If false, the user must press 'q' to advance a step in the simulation
     props['saveAnimation'] = False #Do we want to save the simulation as an mp4 file?
     props['showMainPlot'] = True #If false, we don't show any plots during the simulation
-    props['writeDataToFile'] = True #Do we want to save data as a csv file?
+    props['writeDataToFile'] = False #Do we want to save data as a csv file?
     
     #If any of the show templates booleans are true, then we show a plot of the template curves and don't run the main simulation
-    showAlternativePlots(props, showUpliftTemplate, showContShelfTemplate, showHeightTransfer, showMeltingProfile)
+    showAlternativePlots(props)
     runMainTectonicSimulation(props)
         
         

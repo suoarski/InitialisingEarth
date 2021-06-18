@@ -1,0 +1,6 @@
+*.mp4
+InstallCommands.txt
+.ipynb_checkpoints
+.Trash-0
+__pycache__
+CombiningWithGospl.ipynb

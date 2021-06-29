@@ -230,6 +230,13 @@ class Earth:
                 np.sin(angle/2) * axis[1], 
                 np.sin(angle/2) * axis[2], 
                 np.cos(angle/2)]
+    
+    #Normalizes the height map or optionally brings the heightmap within specified height limits
+    @staticmethod
+    def normalizeArray(A, minValue=0.0, maxValue=1.0):
+        A = A - min(A)
+        A = A / (max(A) - min(A))
+        return A * (maxValue - minValue) + minValue
 
     #========================================== Reading From Data Sources =============================================
     #Read initial landscape data at specified time from file which is in the form of (lon, lat, height)

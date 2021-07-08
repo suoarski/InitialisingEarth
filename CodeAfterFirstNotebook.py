@@ -55,7 +55,7 @@ class Earth:
         self.lon = initData[:, 0]
         self.lat = initData[:, 1]
         self.lonLat = np.stack((initData[:, 0], initData[:, 1]), axis=1)
-        self.sphereXYZ = self.polarToCartesian(1, initData[:, 0], initData[:, 1])
+        self.sphereXYZ = self.polarToCartesian(self.earthRadius, initData[:, 0], initData[:, 1])
         self.heightHistory = [initData[:, 2]]
         self.simulationTimes = np.arange(self.startTime, self.endTime-self.deltaTime, -self.deltaTime)
         self.rotationModel = pygplates.RotationModel(self.rotationsDirectory)

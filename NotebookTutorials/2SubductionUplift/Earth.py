@@ -13,6 +13,8 @@ from scipy.interpolate import griddata
 from scipy.spatial.transform import Rotation as R
 
 import time as tme
+from PlateBoundaries import *
+
 
 
 #================================================== Earth Class ========================================================
@@ -20,11 +22,11 @@ class Earth:
     mainDirectory = os.path.dirname(os.path.dirname(os.path.abspath('')))
     
     def __init__(self,
-                 startTime = 10,
+                 startTime = 30,
                  endTime = 0,
                  deltaTime = 5,
                  earthRadius = 6378.137,
-                 heightAmplificationFactor = 60,
+                 heightAmplificationFactor = 30,
                  platePolygonsDirectory = None,
                  rotationsDirectory = None,
                  initialElevationFilesDir = None,
@@ -33,7 +35,12 @@ class Earth:
                  animationFramesPerIteration = 8,
                  numOfNeighbsForRemesh = 6,
                  clusterThresholdProportion = 300 / 360,
-                 minClusterSize = 3
+                 minClusterSize = 3,
+                 
+                 simulateSubduction = True,
+                 baseUplift = 2,
+                 distTransRange = 1000, 
+                 numToAverageOver = 10
                 ):
         
         #Set directory locations
@@ -62,6 +69,12 @@ class Earth:
         self.clusterThresholdProportion = clusterThresholdProportion
         self.minClusterSize = minClusterSize
         
+        self.simulateSubduction = simulateSubduction
+        self.baseUplift = baseUplift
+        self.distTransRange = distTransRange
+        self.numToAverageOver = numToAverageOver
+        
+        
         #Pre-calculate commonly used attributes
         initData = self.getInitialEarth(self.startTime, initialElevationFilesDir=initialElevationFilesDir)
         self.lon = initData[:, 0]
@@ -80,9 +93,20 @@ class Earth:
     #Run the simulation at specified times and append results to heightHistory
     def runTectonicSimulation(self):
         for time in self.simulationTimes:
+            print('Currently simulating at {} Millions years ago'.format(time), end='\r')
+            
             self.totalIterations += 1
             plateIds = self.getPlateIdsAtTime(time)
             rotations = self.getRotations(plateIds, time)
+            
+            if self.simulateSubduction:
+                boundaries = Boundaries(time, self, plateIds, rotations, 
+                    baseUplift = self.baseUplift,
+                    distTransRange = self.distTransRange, 
+                    numToAverageOver = self.numToAverageOver)
+                uplifts = boundaries.getUplifts()
+                self.heightHistory[-1] += uplifts
+            
             movedEarthXYZ = self.movePlates(plateIds, rotations)
             movedLonLat = self.cartesianToPolarCoords(movedEarthXYZ)
             movedLonLat = np.stack((movedLonLat[1], movedLonLat[2]), axis=1)
@@ -96,11 +120,15 @@ class Earth:
         exageratedRadius = self.heightHistory[iteration] * amplifier + self.earthRadius
         earthXYZ = self.polarToCartesian(exageratedRadius, lon, lat)
         return earthXYZ
+        
+    def getEarthMesh(self, iteration=-1):
+        earthXYZ = self.getEarthXYZ()
+        earthMesh = pv.PolyData(earthXYZ, self.earthFaces)
+        return earthMesh
     
     #Create a plot of earth suitable for jupyter notebook at specified iteration
     def showEarth(self, iteration=-1):
-        earthXYZ = self.getEarthXYZ(iteration=iteration)
-        earthMesh = pv.PolyData(earthXYZ, self.earthFaces)
+        earthMesh = self.getEarthMesh(iteration=iteration)
         plotter = pv.PlotterITK()
         plotter.add_mesh(earthMesh, scalars=self.heightHistory[iteration])
         plotter.show(window_size=[800, 400])

@@ -1,0 +1,9 @@
+
+name: First attempt at writting an input yml file
+
+domain:
+  npdata: ''
+  flowdir: 5
+  fast: False
+  backward: False
+  interp: 1

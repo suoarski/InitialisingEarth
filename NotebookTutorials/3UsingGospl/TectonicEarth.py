@@ -13,7 +13,9 @@ from scipy.interpolate import griddata
 from scipy.spatial.transform import Rotation as R
 
 import time as tme
-from PlateBoundaries import *
+from PlateBoundaries import Boundaries
+from EarthsAssistant import EarthAssist
+
 
 
 
@@ -37,6 +39,7 @@ class Earth:
                  clusterThresholdProportion = 300 / 360,
                  minClusterSize = 3,
                  moveTectonicPlates = True,
+                 useKilometres = True,
                  
                  simulateSubduction = True,
                  baseUplift = 2,
@@ -70,6 +73,7 @@ class Earth:
         self.clusterThresholdProportion = clusterThresholdProportion
         self.minClusterSize = minClusterSize
         self.moveTectonicPlates = moveTectonicPlates
+        self.useKilometres = useKilometres
         
         self.simulateSubduction = simulateSubduction
         self.baseUplift = baseUplift
@@ -79,15 +83,19 @@ class Earth:
         
         #Pre-calculate commonly used attributes
         initData = self.getInitialEarth(self.startTime, initialElevationFilesDir=initialElevationFilesDir)
+        self.earthFaces = pv.PolyData(initData).delaunay_2d().faces
+        if not useKilometres:
+            initData[:, 2] *= 1000 #Use metres incase we don't use kilometres
+        
         self.lon = initData[:, 0]
         self.lat = initData[:, 1]
         self.lonLat = np.stack((initData[:, 0], initData[:, 1]), axis=1)
-        self.sphereXYZ = self.polarToCartesian(self.earthRadius, initData[:, 0], initData[:, 1])
+        self.sphereXYZ = EarthAssist.polarToCartesian(self.earthRadius, initData[:, 0], initData[:, 1])
         self.heightHistory = [initData[:, 2]]
+        self.timeHistory = [startTime]
         self.simulationTimes = np.arange(self.startTime, self.endTime-self.deltaTime, -self.deltaTime)
         self.rotationModel = pygplates.RotationModel(self.rotationsDirectory)
         self.pointFeatures = self.createPointFeatures(initData[:, 0], initData[:, 1])
-        self.earthFaces = pv.PolyData(initData).delaunay_2d().faces
         self.thetaResolution = len(np.unique(initData[:, 0])) - 1
         self.phiResolution = len(np.unique(initData[:, 1])) - 1
     
@@ -96,6 +104,7 @@ class Earth:
         for time in self.simulationTimes:
             print('Currently simulating at {} Millions years ago'.format(time), end='\r')
             self.doSimulationStep(time)
+            self.timeHistory.append(time - self.deltaTime)
             
     #Run a single simulation step
     def doSimulationStep(self, time):
@@ -109,7 +118,7 @@ class Earth:
     #Run algorithm for moving plates and remeshing the sphere
     def movePlatesAndRemesh(self, plateIds, rotations):
         movedEarthXYZ = self.movePlates(plateIds, rotations)
-        movedLonLat = self.cartesianToPolarCoords(movedEarthXYZ)
+        movedLonLat = EarthAssist.cartesianToPolarCoords(movedEarthXYZ)
         movedLonLat = np.stack((movedLonLat[1], movedLonLat[2]), axis=1)
         heights = self.remeshSphere(movedLonLat)
         self.heightHistory.append(heights)
@@ -128,9 +137,10 @@ class Earth:
         amplifier = self.heightAmplificationFactor
         lon, lat = self.lonLat[:, 0], self.lonLat[:, 1]
         exageratedRadius = self.heightHistory[iteration] * amplifier + self.earthRadius
-        earthXYZ = self.polarToCartesian(exageratedRadius, lon, lat)
+        earthXYZ = EarthAssist.polarToCartesian(exageratedRadius, lon, lat)
         return earthXYZ
-        
+    
+    #Create pyvista mesh object of earth for plotting
     def getEarthMesh(self, iteration=-1):
         earthXYZ = self.getEarthXYZ()
         earthMesh = pv.PolyData(earthXYZ, self.earthFaces)
@@ -174,9 +184,9 @@ class Earth:
 
             #Create rotation quaternion from axis and angle
             axisLatLon = stageRotation[0].to_lat_lon()
-            axis = Earth.polarToCartesian(1, axisLatLon[1], axisLatLon[0])
+            axis = EarthAssist.polarToCartesian(1, axisLatLon[1], axisLatLon[0])
             angle = stageRotation[1]
-            rotations[idx] = R.from_quat(Earth.quaternion(axis, angle))
+            rotations[idx] = R.from_quat(EarthAssist.quaternion(axis, angle))
         return rotations
 
     #Move tectonic plates along the sphere by applying rotations to vertices with appropriate plate ids
@@ -195,7 +205,7 @@ class Earth:
         n = self.phiResolution
         h = np.max(movedLonLat[:, 1]) - np.min(movedLonLat[:, 1])
         cylinderRadius = m * h / (np.pi * n * 2)
-        cylinderXYZ = self.cylindricalToCartesian(cylinderRadius, movedLonLat[:, 0], movedLonLat[:, 1])
+        cylinderXYZ = EarthAssist.cylindricalToCartesian(cylinderRadius, movedLonLat[:, 0], movedLonLat[:, 1])
 
         #Run the clustering algorithm
         threshHoldDist = self.clusterThresholdProportion * 360 / m
@@ -225,68 +235,7 @@ class Earth:
         return newHeights
     
     #================================================= Coordinate Transformation Functions ======================================
-    #Coordinate transformation from spherical polar to cartesian
-    @staticmethod
-    def polarToCartesian(radius, theta, phi, useLonLat=True):
-        if useLonLat == True:
-            theta, phi = np.radians(theta+180.), np.radians(90. - phi)
-        X = radius * np.cos(theta) * np.sin(phi)
-        Y = radius * np.sin(theta) * np.sin(phi)
-        Z = radius * np.cos(phi)
-        
-        #Return data either as a list of XYZ coordinates or as a single XYZ coordinate
-        if (type(X) == np.ndarray):
-            return np.stack((X, Y, Z), axis=1)
-        else:
-            return np.array([X, Y, Z])
-
-    #Coordinate transformation from cartesian to polar
-    @staticmethod
-    def cartesianToPolarCoords(XYZ, useLonLat=True):
-        X, Y, Z = XYZ[:, 0], XYZ[:, 1], XYZ[:, 2]
-        R = (X**2 + Y**2 + Z**2)**0.5
-        theta = np.arctan2(Y, X)
-        phi = np.arccos(Z / R)
-        
-        #Return results either in spherical polar or leave it in radians
-        if useLonLat == True:
-            theta, phi = np.degrees(theta), np.degrees(phi)
-            lon, lat = theta - 180, 90 - phi
-            lon[lon < -180] = lon[lon < -180] + 360
-            return R, lon, lat
-        else:
-            return R, theta, phi
-
-    #Coordinate transformation functions from cartesian to cylindrical polar coordinates
-    @staticmethod
-    def cartesianToCylindrical(X, Y, Z):
-        r = (X**2 + Y**2)**0.5
-        theta = np.arctan2(Y, X)
-        return np.stack((r, theta, Z), axis=1)
-
-    #Coordinate transformation functions from cylindrical polar coordinates to cartesian
-    @staticmethod
-    def cylindricalToCartesian(r, theta, Z, useDegrees=True):
-        if useDegrees == True:
-            theta = np.radians(theta+180.)
-        X = r * np.cos(theta)
-        Y = r * np.sin(theta)
-        return np.stack((X, Y, Z), axis=1)
-
-    #Returns a rotation quaternion
-    @staticmethod
-    def quaternion(axis, angle):
-        return [np.sin(angle/2) * axis[0], 
-                np.sin(angle/2) * axis[1], 
-                np.sin(angle/2) * axis[2], 
-                np.cos(angle/2)]
     
-    #Normalizes the height map or optionally brings the heightmap within specified height limits
-    @staticmethod
-    def normalizeArray(A, minValue=0.0, maxValue=1.0):
-        A = A - min(A)
-        A = A / (max(A) - min(A))
-        return A * (maxValue - minValue) + minValue
 
     #========================================== Reading From Data Sources =============================================
     #Read initial landscape data at specified time from file which is in the form of (lon, lat, height)

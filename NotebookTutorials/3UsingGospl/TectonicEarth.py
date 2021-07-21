@@ -47,7 +47,7 @@ class Earth:
                  numToAverageOver = 10
                 ):
         
-        #Set directory locations if none other specified
+        #Set default directory locations if none other specified
         if platePolygonsDirectory == None:
             platePolygonsDirectory = Earth.mainDirectory + '/dataPygplates/Matthews_etal_GPC_2016_MesozoicCenozoic_PlateTopologies_PMAG.gpmlz'
         if rotationsDirectory == None:
@@ -90,8 +90,10 @@ class Earth:
         self.lon = initData[:, 0]
         self.lat = initData[:, 1]
         self.lonLat = np.stack((initData[:, 0], initData[:, 1]), axis=1)
+        self.movedLonLat = self.lonLat
         self.sphereXYZ = EarthAssist.polarToCartesian(self.earthRadius, initData[:, 0], initData[:, 1])
         self.heightHistory = [initData[:, 2]]
+        self.heights = self.heightHistory[-1]
         self.timeHistory = [startTime]
         self.simulationTimes = np.arange(self.startTime, self.endTime-self.deltaTime, -self.deltaTime)
         self.rotationModel = pygplates.RotationModel(self.rotationsDirectory)
@@ -104,10 +106,11 @@ class Earth:
         for time in self.simulationTimes:
             print('Currently simulating at {} Millions years ago'.format(time), end='\r')
             self.doSimulationStep(time)
-            self.timeHistory.append(time - self.deltaTime)
             
     #Run a single simulation step
     def doSimulationStep(self, time):
+        self.heights = np.copy(self.heightHistory[-1])
+        self.timeHistory.append(time - self.deltaTime)
         plateIds = self.getPlateIdsAtTime(time)
         rotations = self.getRotations(plateIds, time)
         if self.simulateSubduction:
@@ -119,8 +122,8 @@ class Earth:
     def movePlatesAndRemesh(self, plateIds, rotations):
         movedEarthXYZ = self.movePlates(plateIds, rotations)
         movedLonLat = EarthAssist.cartesianToPolarCoords(movedEarthXYZ)
-        movedLonLat = np.stack((movedLonLat[1], movedLonLat[2]), axis=1)
-        heights = self.remeshSphere(movedLonLat)
+        self.movedLonLat = np.stack((movedLonLat[1], movedLonLat[2]), axis=1)
+        heights = self.remeshSphere(self.movedLonLat)
         self.heightHistory.append(heights)
     
     #Run algorithm for subduction uplift
@@ -130,19 +133,20 @@ class Earth:
             distTransRange = self.distTransRange, 
             numToAverageOver = self.numToAverageOver)
         uplifts = boundaries.getUplifts()
-        self.heightHistory[-1] += uplifts
+        self.heights += uplifts
     
     #Get XYZ coordinates of earth at specified iteration (the default iteration is the latest iteration)
-    def getEarthXYZ(self, iteration=-1):
-        amplifier = self.heightAmplificationFactor
+    def getEarthXYZ(self, iteration=-1, amplifier=None):
+        if amplifier == None:
+            amplifier = self.heightAmplificationFactor
         lon, lat = self.lonLat[:, 0], self.lonLat[:, 1]
         exageratedRadius = self.heightHistory[iteration] * amplifier + self.earthRadius
         earthXYZ = EarthAssist.polarToCartesian(exageratedRadius, lon, lat)
         return earthXYZ
     
     #Create pyvista mesh object of earth for plotting
-    def getEarthMesh(self, iteration=-1):
-        earthXYZ = self.getEarthXYZ()
+    def getEarthMesh(self, iteration=-1, amplifier=None):
+        earthXYZ = self.getEarthXYZ(iteration=iteration, amplifier=amplifier)
         earthMesh = pv.PolyData(earthXYZ, self.earthFaces)
         return earthMesh
     
@@ -198,7 +202,7 @@ class Earth:
         return newXYZ
     
     def getHeightsForRemesh(self, movedLonLat):
-        heights = self.heightHistory[-1]
+        heights = self.heights
         
         #Create clyinder
         m = self.thetaResolution

@@ -158,23 +158,30 @@ class Earth:
         plotter.show(window_size=[800, 400])
     
     #Create an animation of the earth which is saved as an mp4 file in the current directory
-    def animate(self):
+    def animate(self, lookAtLonLat=[0, 0], cameraZoom=1.4, framesPerIteration=None):
         earthXYZ = self.getEarthXYZ(iteration=0)
         earthMesh = pv.PolyData(earthXYZ, self.earthFaces)
+        if framesPerIteration == None:
+            framesPerIteration = self.animationFramesPerIteration
         
         #Set up plotter for animation
         plotter = pv.Plotter()
         plotter.add_mesh(earthMesh, scalars=self.heightHistory[0], cmap='gist_earth')
+        plotter.camera_position = 'yz'
+        plotter.camera.zoom(cameraZoom)
+        plotter.camera.azimuth = 180 + lookAtLonLat[0]
+        plotter.camera.elevation = lookAtLonLat[1]
         plotter.show(auto_close=False, window_size=[800, 608])
         plotter.open_movie(self.movieOutputDir)
-        plotter.write_frame()
+        for i in range(framesPerIteration):
+            plotter.write_frame()
         
         #Draw frames of simulation
         for i in range(len(self.heightHistory)-1):
             earthXYZ = self.getEarthXYZ(iteration=i+1)
             plotter.update_coordinates(earthXYZ, mesh=earthMesh)
             plotter.update_scalars(self.heightHistory[i+1], render=False, mesh=earthMesh)
-            for i in range(self.animationFramesPerIteration):
+            for i in range(framesPerIteration):
                 plotter.write_frame()
         plotter.close()
     

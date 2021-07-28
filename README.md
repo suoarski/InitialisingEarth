@@ -12,7 +12,7 @@ docker pull suoarski/earthinit
 
 Once the image has been pulled, clone a copy of the [InitialisingEarth Github](https://github.com/suoarski/InitialisingEarth) repository to some directory on your computer. Then, open Docker Desktop, under *Images* run the newly created docker image named *suoarski/earthinit* as follows:
 
-![](Images/Docker1.png)
+![SomeText](Images/Docker1.PNG?raw=true "Title")
 
 In the new pop up window, under *Option Settings* set the following attributes:
 

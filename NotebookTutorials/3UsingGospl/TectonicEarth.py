@@ -40,6 +40,7 @@ class Earth:
                  minClusterSize = 3,
                  moveTectonicPlates = True,
                  useKilometres = True,
+                 useGospl = True,
                  
                  simulateSubduction = True,
                  baseUplift = 2,
@@ -100,6 +101,10 @@ class Earth:
         self.pointFeatures = self.createPointFeatures(initData[:, 0], initData[:, 1])
         self.thetaResolution = len(np.unique(initData[:, 0])) - 1
         self.phiResolution = len(np.unique(initData[:, 1])) - 1
+        
+        #Gospl related variables
+        self.tectonicDisplacementHistory = []
+        self.useGospl = useGospl
     
     #Run the simulation over all specified times
     def runTectonicSimulation(self):
@@ -117,6 +122,8 @@ class Earth:
             self.doSubductionUplift(time, plateIds, rotations)
         if self.movePlates:
             self.movePlatesAndRemesh(plateIds, rotations)
+        if self.useGospl:
+            self.createTectonicDisplacements()
         
     #Run algorithm for moving plates and remeshing the sphere
     def movePlatesAndRemesh(self, plateIds, rotations):
@@ -125,6 +132,25 @@ class Earth:
         self.movedLonLat = np.stack((movedLonLat[1], movedLonLat[2]), axis=1)
         heights = self.remeshSphere(self.movedLonLat)
         self.heightHistory.append(heights)
+    
+    
+    
+    
+    def createTectonicDisplacements(self, maxTectonicDisp=0.18):
+        earthBeforeXYZ = self.getEarthXYZ(amplifier=1, iteration=-2)
+        
+        #Get earth's XYZ after moving plates but before the remesh
+        heightsAfter = self.heights
+        radius = heightsAfter + self.earthRadius
+        earthAfterXYZ = EarthAssist.polarToCartesian(radius, self.movedLonLat[:, 0], self.movedLonLat[:, 1])
+        
+        #Calculate the tectonic displacements, and set maxTectonicDisp
+        tectonicDisp = (earthAfterXYZ - earthBeforeXYZ)
+        tectonicDisp *= maxTectonicDisp / np.max(np.linalg.norm(tectonicDisp, axis=1))
+        self.tectonicDisplacementHistory.append(tectonicDisp)
+    
+    
+    
     
     #Run algorithm for subduction uplift
     def doSubductionUplift(self, time, plateIds, rotations):
@@ -148,6 +174,7 @@ class Earth:
     def getEarthMesh(self, iteration=-1, amplifier=None):
         earthXYZ = self.getEarthXYZ(iteration=iteration, amplifier=amplifier)
         earthMesh = pv.PolyData(earthXYZ, self.earthFaces)
+        earthMesh['heights'] = self.heightHistory[iteration]
         return earthMesh
     
     #Create a plot of earth suitable for jupyter notebook at specified iteration

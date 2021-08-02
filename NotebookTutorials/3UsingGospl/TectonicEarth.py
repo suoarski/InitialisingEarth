@@ -108,7 +108,7 @@ class Earth:
     
     #Run the simulation over all specified times
     def runTectonicSimulation(self):
-        for time in self.simulationTimes:
+        for time in self.simulationTimes[:-1]:
             print('Currently simulating at {} Millions years ago'.format(time), end='\r')
             self.doSimulationStep(time)
             

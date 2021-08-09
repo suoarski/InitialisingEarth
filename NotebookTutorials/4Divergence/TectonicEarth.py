@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 from scipy.spatial import cKDTree
 from IPython.display import Video
 from sklearn.cluster import DBSCAN
+from GosplManager import GosplManager
 from scipy.interpolate import griddata
 from scipy.spatial.transform import Rotation as R
 
@@ -125,6 +126,8 @@ class Earth:
         if self.useGospl:
             self.createTectonicDisplacements()
         
+        
+        
     #Run algorithm for moving plates and remeshing the sphere
     def movePlatesAndRemesh(self, plateIds, rotations):
         movedEarthXYZ = self.movePlates(plateIds, rotations)
@@ -135,11 +138,11 @@ class Earth:
     
     #Run algorithm for subduction uplift
     def doSubductionUplift(self, time, plateIds, rotations):
-        boundaries = Boundaries(time, self, plateIds, rotations,
+        self.boundaries = Boundaries(time, self, plateIds, rotations,
             baseUplift = self.baseUplift,
             distTransRange = self.distTransRange, 
             numToAverageOver = self.numToAverageOver)
-        uplifts = boundaries.getUplifts()
+        uplifts = self.boundaries.getUplifts()
         self.heights += uplifts
         
     #Keep track of tectonic displacements for Gospl
@@ -174,9 +177,9 @@ class Earth:
     
     #Create a plot of earth suitable for jupyter notebook at specified iteration
     def showEarth(self, iteration=-1):
-        earthMesh = self.getEarthMesh(iteration=iteration)
+        earthMesh = self.getEarthMesh(iteration=iteration)  
         plotter = pv.PlotterITK()
-        plotter.add_mesh(earthMesh, scalars=self.heightHistory[iteration])
+        plotter.add_mesh(earthMesh, scalars='heights')
         plotter.show(window_size=[800, 400])
     
     #Create an animation of the earth which is saved as an mp4 file in the current directory
@@ -276,7 +279,12 @@ class Earth:
         
         #Get path of initial landscape data file at specified time
         paleoDemsPath = Path(initialElevationFilesDir)
-        initialLandscapePath = list(paleoDemsPath.glob('**/*%03.fMa.csv'%time))[0]
+        
+        #Try reading the specified elevation file, and raise an error if it does not exist
+        try:
+            initialLandscapePath = list(paleoDemsPath.glob('**/*%03.fMa.csv'%time))[0]
+        except IndexError:
+            raise IndexError("Unable to initialise earth. There is no initial topography data file at the specified time. Try changing earth's initial startTime variable.")
         
         #Read data and split by newline and commas to create numpy array of data
         initialLandscapeFileLines = open(initialLandscapePath).read().split('\n')[1:-1]

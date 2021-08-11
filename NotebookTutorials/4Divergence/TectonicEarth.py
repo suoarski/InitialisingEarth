@@ -44,9 +44,13 @@ class Earth:
                  useKilometres = True,
                  useGospl = True,
                  simulateSubduction = True,
+                 useDivergeLowering = True,
                  baseUplift = 2,
                  distTransRange = 1000, 
-                 numToAverageOver = 10
+                 numToAverageOver = 10,
+                 baseLowering = 2000,
+                 maxLoweringDistance = 200000,
+                 minMaxLoweringHeights = 8000
                 ):
         
         #Set default directory locations if none other specified
@@ -106,6 +110,10 @@ class Earth:
         #Gospl related variables
         self.tectonicDisplacementHistory = []
         self.useGospl = useGospl
+        self.baseLowering = baseLowering
+        self.useDivergeLowering = useDivergeLowering
+        self.maxLoweringDistance = maxLoweringDistance
+        self.minMaxLoweringHeights = minMaxLoweringHeights
     
     #Run the simulation over all specified times
     def runTectonicSimulation(self):
@@ -117,36 +125,46 @@ class Earth:
     def doSimulationStep(self, time):
         self.heights = np.copy(self.heightHistory[-1])
         self.timeHistory.append(time - self.deltaTime)
-        plateIds = self.getPlateIdsAtTime(time)
-        rotations = self.getRotations(plateIds, time)
+        self.setPlateData(time)
         if self.simulateSubduction:
-            self.doSubductionUplift(time, plateIds, rotations)
+            self.heights += self.boundaries.getUplifts()
+        if self.useDivergeLowering:
+            self.heights += self.boundaries.getDivergeLowering()
         if self.movePlates:
-            self.movePlatesAndRemesh(plateIds, rotations)
+            self.movePlatesAndRemesh()
         if self.useGospl:
             self.createTectonicDisplacements()
         
-        
+    '''
+    def applyDivergeLowering(self):
+        divXYZ, divLinePoints = getDivergingBoundaries(self.boundaries)
+        distToDivs = getDistanceToDivergenge(divXYZ, self.sphereXYZ, divLinePoints)
+        self.heights -= self.baseLowering * getDivergeLowering(distToDivs, self.heights)
+    '''
+    
+    #Set current plateIds, rotations and plate boundaries
+    def setPlateData(self, time):
+        self.plateIds = self.getPlateIdsAtTime(time)
+        self.rotations = self.getRotations(self.plateIds, time)
+        self.boundaries = Boundaries(time, self, self.plateIds, self.rotations,
+                                    baseUplift = self.baseUplift,
+                                    distTransRange = self.distTransRange, 
+                                    numToAverageOver = self.numToAverageOver,
+                                    baseLowering = self.baseLowering,
+                                    maxLoweringDistance = self.maxLoweringDistance,
+                                    minMaxLoweringHeights = self.minMaxLoweringHeights
+                                    )
         
     #Run algorithm for moving plates and remeshing the sphere
-    def movePlatesAndRemesh(self, plateIds, rotations):
-        movedEarthXYZ = self.movePlates(plateIds, rotations)
+    def movePlatesAndRemesh(self):
+        movedEarthXYZ = self.movePlates(self.plateIds, self.rotations)
         movedLonLat = EarthAssist.cartesianToPolarCoords(movedEarthXYZ)
         self.movedLonLat = np.stack((movedLonLat[1], movedLonLat[2]), axis=1)
         heights = self.remeshSphere(self.movedLonLat)
         self.heightHistory.append(heights)
     
-    #Run algorithm for subduction uplift
-    def doSubductionUplift(self, time, plateIds, rotations):
-        self.boundaries = Boundaries(time, self, plateIds, rotations,
-            baseUplift = self.baseUplift,
-            distTransRange = self.distTransRange, 
-            numToAverageOver = self.numToAverageOver)
-        uplifts = self.boundaries.getUplifts()
-        self.heights += uplifts
-        
     #Keep track of tectonic displacements for Gospl
-    def createTectonicDisplacements(self, maxTectonicDisp=0.18):
+    def createTectonicDisplacements(self):
         earthBeforeXYZ = self.getEarthXYZ(amplifier=1, iteration=-2)
         
         #Get earth's XYZ after moving plates but before the remesh
@@ -154,9 +172,8 @@ class Earth:
         radius = heightsAfter + self.earthRadius
         earthAfterXYZ = EarthAssist.polarToCartesian(radius, self.movedLonLat[:, 0], self.movedLonLat[:, 1])
         
-        #Calculate the tectonic displacements, and set maxTectonicDisp
-        tectonicDisp = (earthAfterXYZ - earthBeforeXYZ)
-        tectonicDisp *= maxTectonicDisp / np.max(np.linalg.norm(tectonicDisp, axis=1))
+        #Calculate the tectonic displacements in metres per year
+        tectonicDisp = (earthAfterXYZ - earthBeforeXYZ) / (self.deltaTime * 1000000)
         self.tectonicDisplacementHistory.append(tectonicDisp)
     
     #Get XYZ coordinates of earth at specified iteration (the default iteration is the latest iteration)

@@ -67,6 +67,16 @@ class EarthAssist:
         A = A / (max(A) - min(A))
         return A * (maxValue - minValue) + minValue
     
+    #Gaussian function used for profile of diverge lowering
+    @staticmethod
+    def gaussian(x, mean=0, variance=0.25):
+        return np.exp(-((x - mean)**2) / variance)
+
+    #Sigmoid function used for  height transfer of diverge lowering
+    @staticmethod
+    def sigmoid(x, centre=-0.1, steepness=6):
+        return 1 / (1 + np.exp(-(x - centre) * steepness))
+    
     #Creates a mesh object of the tectonic displacements vector field for visualizations
     #We begin by normalizing the vectors so that their arrow sizes are consistent
     @staticmethod

@@ -88,7 +88,11 @@ class Boundaries:
                 rotations,
                 baseUplift = 2,
                 distTransRange = 1000, 
-                numToAverageOver = 10
+                numToAverageOver = 10,
+                
+                baseLowering = 2000,
+                maxLoweringDistance = 200000,
+                minMaxLoweringHeights = 8000
         ):
         
         #Set class attributes
@@ -109,6 +113,11 @@ class Boundaries:
         self.idToSubBound = self.getSubductionBoundsForEachPlateId()
         self.distanceTransferFunction = self.getDistanceTransferFunction()
         self.setCollisionSpeeds()
+        
+        self.baseLowering = baseLowering
+        self.maxLoweringDistance = maxLoweringDistance
+        self.minMaxLoweringHeights = minMaxLoweringHeights
+        
     
     #Create a dictionary containing plate Ids as keys and plate centres as values
     def getPlateCentres(self):
@@ -260,6 +269,34 @@ class Boundaries:
                 speed = -speed
             speeds[i] = speed
         return speeds, directions
+    
+    #========================================= Code For Diverging Plates =================================================
+    
+    def getDivergeLowering(self, gaussMean=0, gaussVariance=0.25, sigmoidCentre=-0.1, sigmoidSteepness=6):
+        divXYZ, divLinePoints = self.getDivergingBoundaries()
+        distToDivs = self.getDistanceToDivergence(divXYZ, self.earth.sphereXYZ, divLinePoints)
+        distanceTransfer = EarthAssist.gaussian(distToDivs / self.maxLoweringDistance, mean=gaussMean, variance=gaussVariance)
+        heightTransfer = EarthAssist.sigmoid(self.earth.heights / self.minMaxLoweringHeights, centre=sigmoidCentre, steepness=sigmoidSteepness)
+        return (- self.baseLowering * distanceTransfer * heightTransfer)
+    
+    #Get coordinates and line points of all diverging plate boundary locations
+    def getDivergingBoundaries(self):
+        divXYZ, divLinePoints = [], []
+        for bound in self.plateBoundaries:
+            for i in range(bound.lineCentres.shape[0]):
+                if bound.collisionSpeed[i] < 0:
+                    divXYZ.append(bound.lineCentres[i])
+                    divLinePoints.append(bound.linePoints[i])
+        return np.array(divXYZ), np.array(divLinePoints)
+    
+    #Get distance from vertices to diverging plate boundaries.
+    @staticmethod
+    def getDistanceToDivergence(divXYZ, sphereXYZ, linePoints):
+        distIds = cKDTree(divXYZ).query(sphereXYZ, k=1)[1]
+        distIds[distIds >= divXYZ.shape[0]] = divXYZ.shape[0]-1
+        closestLinePoints = linePoints[distIds]
+        distToBound = Boundaries.getDistsToLinesSeg(sphereXYZ, closestLinePoints)
+        return distToBound
     
     #========================================= Code For Getting Uplifts ==================================================
     #Get subduction uplifts using speed and distance transfers.

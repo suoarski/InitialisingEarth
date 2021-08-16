@@ -1,6 +1,7 @@
 
 import pygplates
 import numpy as np
+import pyvista as pv
 from numba import jit
 from scipy.spatial import cKDTree
 from scipy.interpolate import interp1d
@@ -76,8 +77,9 @@ class RidgeBoundary(PlateBoundary):
         self.boundType = 2
 
 #================================================== Boundaries Main Class ========================================================
-#================================================== Initialization ===============================================================
 #This class will contain a list of plate boundary objects at a specified time. It also contains most of the algorithms discussed in the second notebook
+
+#================================================== Initialization ===============================================================
 class Boundaries:
     def __init__(self, 
                 time,
@@ -86,7 +88,11 @@ class Boundaries:
                 rotations,
                 baseUplift = 2,
                 distTransRange = 1000, 
-                numToAverageOver = 10
+                numToAverageOver = 10,
+                
+                baseLowering = 2000,
+                maxLoweringDistance = 200000,
+                minMaxLoweringHeights = 8000
         ):
         
         #Set class attributes
@@ -107,6 +113,20 @@ class Boundaries:
         self.idToSubBound = self.getSubductionBoundsForEachPlateId()
         self.distanceTransferFunction = self.getDistanceTransferFunction()
         self.setCollisionSpeeds()
+        
+        self.baseLowering = baseLowering
+        self.maxLoweringDistance = maxLoweringDistance
+        self.minMaxLoweringHeights = minMaxLoweringHeights
+        
+    
+    #Create a dictionary containing plate Ids as keys and plate centres as values
+    def getPlateCentres(self):
+        plateCentres = {}
+        uniqueIds = np.unique(self.plateIds)
+        for i in range(uniqueIds.shape[0]):
+            plateXYZ = self.earth.sphereXYZ[self.plateIds==uniqueIds[i]]
+            plateCentres[uniqueIds[i]] = np.sum(plateXYZ, axis=0) / plateXYZ.shape[0]
+        return plateCentres
     
     #Create function that returns a list of plate boundaries at specified times
     def createPlateBoundariesAtTime(self):
@@ -135,7 +155,54 @@ class Boundaries:
             else:
                 plateBoundaries.append(PlateBoundary(sharedBound, earthRadius=self.earthRadius))
         return plateBoundaries
-
+        
+    #Create dictionary with plate ids as keys and the plate's subduction boundary as values
+    def getSubductionBoundsForEachPlateId(self):
+        idToSubBound = {}
+        for bound in self.plateBoundaries:
+            
+            #List to store plate ids of overriding plates for this boundary
+            overId = []
+            
+            #Append plate ids of overiding plates
+            if bound.boundType == 1:
+                for idx in bound.overPateId:
+                    overId.append(idx)
+            
+            #Append plate ids of both sides of an orogenic belt
+            elif bound.gpmlBoundType == 'gpml:OrogenicBelt':
+                for sIds in bound.sharedPlateIds:
+                    for idx in sIds:
+                        overId.append(idx)
+            
+            #We append this plate boundary to dictionary values with appropriate keys (plateIds)
+            overId = np.unique(overId)
+            for idx in overId:
+                if (idx not in list(idToSubBound.keys())):
+                    idToSubBound[idx] = []
+                idToSubBound[idx].append(bound)
+        return idToSubBound
+    
+    #Template curve for the distance transfer for subduction uplift
+    def getDistanceTransferFunction(self):
+        distTransPoints = np.array([
+            [-100, 0.0],
+            [-50, 0],
+            [-10, 0],
+            [-1.0, 0.0],
+            [-0.101, 0.0],
+            [-0.1, 0.0],
+            [0, 0.4],
+            [0.19, 1.0],
+            [0.21, 1.0],
+            [0.5, 0.5],
+            [0.99, 0.0],
+            [1.0, 0.0],
+            [5.0, 0.0],
+            [50.0, 0.0],
+            [100.0, 0.0]
+            ])
+        return interp1d(distTransPoints[:, 0], distTransPoints[:, 1], kind='quadratic')
 
     #Since we are ignoring plate boundaries with not exactly two neighbouring plates,
     #Some plate boundaries will have no coordinates, so we ignore those
@@ -147,7 +214,7 @@ class Boundaries:
                 ignoreThis = False
         return ignoreThis
     
-    #================================================== Distance And Speeds ===============================================================
+    #================================================== Distance And Speeds Initialization =======================================================
     #We set the collision speed attribute for points in our plate boundary objects
     def setCollisionSpeeds(self):
         for bound in self.plateBoundaries:
@@ -203,38 +270,35 @@ class Boundaries:
             speeds[i] = speed
         return speeds, directions
     
-    #Create dictionary with plate ids as keys and the plate's subduction boundary as values
-    def getSubductionBoundsForEachPlateId(self):
-        idToSubBound = {}
+    #========================================= Code For Diverging Plates =================================================
+    
+    def getDivergeLowering(self, gaussMean=0, gaussVariance=0.25, sigmoidCentre=-0.1, sigmoidSteepness=6):
+        divXYZ, divLinePoints = self.getDivergingBoundaries()
+        distToDivs = self.getDistanceToDivergence(divXYZ, self.earth.sphereXYZ, divLinePoints)
+        distanceTransfer = EarthAssist.gaussian(distToDivs / self.maxLoweringDistance, mean=gaussMean, variance=gaussVariance)
+        heightTransfer = EarthAssist.sigmoid(self.earth.heights / self.minMaxLoweringHeights, centre=sigmoidCentre, steepness=sigmoidSteepness)
+        return (- self.baseLowering * distanceTransfer * heightTransfer)
+    
+    #Get coordinates and line points of all diverging plate boundary locations
+    def getDivergingBoundaries(self):
+        divXYZ, divLinePoints = [], []
         for bound in self.plateBoundaries:
-            
-            #List to store plate ids of overriding plates for this boundary
-            overId = []
-            
-            #Append plate ids of overiding plates
-            if bound.boundType == 1:
-                for idx in bound.overPateId:
-                    overId.append(idx)
-            
-            #Append plate ids of both sides of an orogenic belt
-            elif bound.gpmlBoundType == 'gpml:OrogenicBelt':
-                for sIds in bound.sharedPlateIds:
-                    for idx in sIds:
-                        overId.append(idx)
-            
-            #We append this plate boundary to dictionary values with appropriate keys (plateIds)
-            overId = np.unique(overId)
-            for idx in overId:
-                if (idx not in list(idToSubBound.keys())):
-                    idToSubBound[idx] = []
-                idToSubBound[idx].append(bound)
-        return idToSubBound
+            for i in range(bound.lineCentres.shape[0]):
+                if bound.collisionSpeed[i] < 0:
+                    divXYZ.append(bound.lineCentres[i])
+                    divLinePoints.append(bound.linePoints[i])
+        return np.array(divXYZ), np.array(divLinePoints)
     
+    #Get distance from vertices to diverging plate boundaries.
+    @staticmethod
+    def getDistanceToDivergence(divXYZ, sphereXYZ, linePoints):
+        distIds = cKDTree(divXYZ).query(sphereXYZ, k=1)[1]
+        distIds[distIds >= divXYZ.shape[0]] = divXYZ.shape[0]-1
+        closestLinePoints = linePoints[distIds]
+        distToBound = Boundaries.getDistsToLinesSeg(sphereXYZ, closestLinePoints)
+        return distToBound
     
-    
-    
-    
-    
+    #========================================= Code For Getting Uplifts ==================================================
     #Get subduction uplifts using speed and distance transfers.
     def getUplifts(self):
         speedTransfer, distTransfer = self.getTransfers()
@@ -312,27 +376,10 @@ class Boundaries:
         linePoints = np.array(linePoints)
         lineLengths = np.linalg.norm(linePoints[:, 0, :] - linePoints[:, 1, :], axis=1)
         return np.array(boundXYZ), boundSpeed, np.array(boundDirection), linePoints, lineLengths
+
+
     
-    def getDistanceTransferFunction(self):
-        #Template curve for the distance transfer for subduction uplift
-        distTransPoints = np.array([
-            [-100, 0.0],
-            [-50, 0],
-            [-10, 0],
-            [-1.0, 0.0],
-            [-0.101, 0.0],
-            [-0.1, 0.0],
-            [0, 0.4],
-            [0.19, 1.0],
-            [0.21, 1.0],
-            [0.5, 0.5],
-            [0.99, 0.0],
-            [1.0, 0.0],
-            [5.0, 0.0],
-            [50.0, 0.0],
-            [100.0, 0.0]
-            ])
-        return interp1d(distTransPoints[:, 0], distTransPoints[:, 1], kind='quadratic')
+    
     
     #Get distance from line segments
     @staticmethod
@@ -396,17 +443,10 @@ class Boundaries:
                     directionToBound[i, j] = direction / np.linalg.norm(direction)
         return directionToBound
     
-    #Create a dictionary containing plate Ids as keys and plate centres as values
-    def getPlateCentres(self):
-        plateCentres = {}
-        uniqueIds = np.unique(self.plateIds)
-        for i in range(uniqueIds.shape[0]):
-            plateXYZ = self.earth.sphereXYZ[self.plateIds==uniqueIds[i]]
-            plateCentres[uniqueIds[i]] = np.sum(plateXYZ, axis=0) / plateXYZ.shape[0]
-        return plateCentres
-    
     #================================================== Functions for Visualizations ========================================================
-    def getBoundaryLines(self):
+    #Given a list of plate boundaries, create pyvista mesh object of boundary lines
+    @staticmethod
+    def getBoundaryLines(bounds):
     
         #Variables used to create the line pyvista object
         XYZ, lineConnectivity, bType = [], [], []
@@ -414,8 +454,8 @@ class Boundaries:
         #Counter for keeping track of how many vertices we have used
         xyzCount = 0
         
-        #Loop through all plate boundaries
-        for bound in self.plateBoundaries:
+        #Loop through all given plate boundaries
+        for bound in bounds:
             
             #Create lineID for defining line connectivity
             numOfPoints = len(bound.XYZ)
@@ -430,6 +470,6 @@ class Boundaries:
             xyzCount += numOfPoints
             
         #Create the line mesh
-        lineMesh = pv.PolyData(np.array(XYZ), lines=lineConnectivity)
+        lineMesh = pv.PolyData(np.array(XYZ) * 1.02, lines=lineConnectivity)
         lineMesh['boundType'] = np.array(bType)
         return lineMesh

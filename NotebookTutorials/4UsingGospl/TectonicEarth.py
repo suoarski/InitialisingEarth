@@ -9,13 +9,13 @@ import matplotlib.pyplot as plt
 from scipy.spatial import cKDTree
 from IPython.display import Video
 from sklearn.cluster import DBSCAN
+from GosplManager import GosplManager
 from scipy.interpolate import griddata
 from scipy.spatial.transform import Rotation as R
 
 import time as tme
 from PlateBoundaries import Boundaries
 from EarthsAssistant import EarthAssist
-
 
 
 
@@ -28,24 +28,39 @@ class Earth:
                  startTime = 30,
                  endTime = 0,
                  deltaTime = 5,
-                 earthRadius = 6378.137,
+                 earthRadius = 6378137.,
                  heightAmplificationFactor = 30,
-                 platePolygonsDirectory = None,
-                 rotationsDirectory = None,
-                 initialElevationFilesDir = None,
-                 plateIdsDirectory = None,
-                 movieOutputDir = 'TectonicSimulation.mp4',
                  animationFramesPerIteration = 8,
+                 
+                 #Parameters related to subduction uplift
+                 baseUplift = 1000,
+                 numToAverageOver = 10,
+                 distTransRange = 1000000,
+                 
+                 #Parameters related to diverge lowering
+                 baseLowering = 2000,
+                 maxLoweringDistance = 200000,
+                 minMaxLoweringHeights = 8000,
+                 
+                 #Parameters related to remeshing
+                 minClusterSize = 3,
                  numOfNeighbsForRemesh = 6,
                  clusterThresholdProportion = 300 / 360,
-                 minClusterSize = 3,
-                 moveTectonicPlates = True,
-                 useKilometres = True,
+                 
+                 #If any of these parameters are None, we use their default directory loctations
+                 movieOutputDir = None,
+                 npzSaveDirectory = None,
+                 plateIdsDirectory = None,
+                 rotationsDirectory = None,
+                 platePolygonsDirectory = None,
+                 initialElevationFilesDir = None,
+                 
+                 #Specify which algorithms to use during a simulation run
                  useGospl = True,
+                 useKilometres = False,
+                 moveTectonicPlates = True,
                  simulateSubduction = True,
-                 baseUplift = 2,
-                 distTransRange = 1000, 
-                 numToAverageOver = 10
+                 useDivergeLowering = True
                 ):
         
         #Set default directory locations if none other specified
@@ -57,54 +72,72 @@ class Earth:
             initialElevationFilesDir = Earth.mainDirectory + '/PaleoDEMS'
         if plateIdsDirectory == None:
             plateIdsDirectory = Earth.mainDirectory + '/PlateIdData'
+        if npzSaveDirectory == None:
+            npzSaveDirectory = '/TectonicEarthSaves'
+        if movieOutputDir == None:
+            movieOutputDir = 'TectonicSimulation.mp4'
         
-        #Set attribute from class initialization
+        #Set basic attribute from class initialization
         self.startTime = startTime
         self.endTime = endTime
         self.deltaTime = deltaTime
         self.earthRadius = earthRadius
         self.heightAmplificationFactor = heightAmplificationFactor
-        self.platePolygonsDirectory = platePolygonsDirectory
-        self.rotationsDirectory = rotationsDirectory
-        self.initialElevationFilesDir = initialElevationFilesDir
-        self.plateIdsDirectory = plateIdsDirectory
-        self.movieOutputDir = movieOutputDir
         self.animationFramesPerIteration = animationFramesPerIteration
-        self.numOfNeighbsForRemesh = numOfNeighbsForRemesh
-        self.clusterThresholdProportion = clusterThresholdProportion
-        self.minClusterSize = minClusterSize
-        self.moveTectonicPlates = moveTectonicPlates
-        self.useKilometres = useKilometres
         
-        self.simulateSubduction = simulateSubduction
+        #Set attributes for subduction uplift
         self.baseUplift = baseUplift
         self.distTransRange = distTransRange
         self.numToAverageOver = numToAverageOver
         
+        #Attributes related to diverge lowering
+        self.baseLowering = baseLowering
+        self.maxLoweringDistance = maxLoweringDistance
+        self.minMaxLoweringHeights = minMaxLoweringHeights
         
-        #Pre-calculate commonly used attributes
+        #Attributes related to remeshing
+        self.clusterThresholdProportion = clusterThresholdProportion
+        self.numOfNeighbsForRemesh = numOfNeighbsForRemesh
+        self.minClusterSize = minClusterSize
+        
+        #Set directory related attributes
+        self.initialElevationFilesDir = initialElevationFilesDir
+        self.platePolygonsDirectory = platePolygonsDirectory
+        self.rotationsDirectory = rotationsDirectory
+        self.plateIdsDirectory = plateIdsDirectory
+        self.npzSaveDirectory = npzSaveDirectory
+        self.movieOutputDir = movieOutputDir
+        
+        #Specify which algorithm to run during the simulation
+        self.useGospl = useGospl
+        self.useKilometres = useKilometres
+        self.useDivergeLowering = useDivergeLowering
+        self.moveTectonicPlates = moveTectonicPlates
+        self.simulateSubduction = simulateSubduction
+        
+        #Get initial topological data and convert to from kilometres to metres if chosen so
         initData = self.getInitialEarth(self.startTime, initialElevationFilesDir=initialElevationFilesDir)
         self.earthFaces = pv.PolyData(initData).delaunay_2d().faces
         if not useKilometres:
-            initData[:, 2] *= 1000 #Use metres incase we don't use kilometres
+            initData[:, 2] *= 1000
         
+        #Initiate coordinate related data
         self.lon = initData[:, 0]
         self.lat = initData[:, 1]
         self.lonLat = np.stack((initData[:, 0], initData[:, 1]), axis=1)
-        self.movedLonLat = self.lonLat
         self.sphereXYZ = EarthAssist.polarToCartesian(self.earthRadius, initData[:, 0], initData[:, 1])
-        self.heightHistory = [initData[:, 2]]
-        self.heights = self.heightHistory[-1]
-        self.timeHistory = [startTime]
-        self.simulationTimes = np.arange(self.startTime, self.endTime-self.deltaTime, -self.deltaTime)
-        self.rotationModel = pygplates.RotationModel(self.rotationsDirectory)
         self.pointFeatures = self.createPointFeatures(initData[:, 0], initData[:, 1])
         self.thetaResolution = len(np.unique(initData[:, 0])) - 1
         self.phiResolution = len(np.unique(initData[:, 1])) - 1
+        self.movedLonLat = self.lonLat
         
-        #Gospl related variables
-        self.tectonicDisplacementHistory = []
-        self.useGospl = useGospl
+        #Random other variables
+        self.timeHistory = [startTime]
+        self.heightHistory = [initData[:, 2]]
+        self.heights = self.heightHistory[-1]
+        self.tectonicDispHistory = []
+        self.rotationModel = pygplates.RotationModel(self.rotationsDirectory)
+        self.simulationTimes = np.arange(self.startTime, self.endTime-self.deltaTime, -self.deltaTime)
     
     #Run the simulation over all specified times
     def runTectonicSimulation(self):
@@ -116,46 +149,30 @@ class Earth:
     def doSimulationStep(self, time):
         self.heights = np.copy(self.heightHistory[-1])
         self.timeHistory.append(time - self.deltaTime)
-        plateIds = self.getPlateIdsAtTime(time)
-        rotations = self.getRotations(plateIds, time)
+        self.setPlateData(time)
         if self.simulateSubduction:
-            self.doSubductionUplift(time, plateIds, rotations)
+            self.heights += self.boundaries.getUplifts()
+        if self.useDivergeLowering:
+            self.heights += self.boundaries.getDivergeLowering()
         if self.movePlates:
-            self.movePlatesAndRemesh(plateIds, rotations)
+            self.movePlatesAndRemesh()
         if self.useGospl:
             self.createTectonicDisplacements()
-        
-    #Run algorithm for moving plates and remeshing the sphere
-    def movePlatesAndRemesh(self, plateIds, rotations):
-        movedEarthXYZ = self.movePlates(plateIds, rotations)
-        movedLonLat = EarthAssist.cartesianToPolarCoords(movedEarthXYZ)
-        self.movedLonLat = np.stack((movedLonLat[1], movedLonLat[2]), axis=1)
-        heights = self.remeshSphere(self.movedLonLat)
-        self.heightHistory.append(heights)
     
-    #Run algorithm for subduction uplift
-    def doSubductionUplift(self, time, plateIds, rotations):
-        boundaries = Boundaries(time, self, plateIds, rotations,
-            baseUplift = self.baseUplift,
-            distTransRange = self.distTransRange, 
-            numToAverageOver = self.numToAverageOver)
-        uplifts = boundaries.getUplifts()
-        self.heights += uplifts
-        
-    #Keep track of tectonic displacements for Gospl
-    def createTectonicDisplacements(self, maxTectonicDisp=0.18):
-        earthBeforeXYZ = self.getEarthXYZ(amplifier=1, iteration=-2)
-        
-        #Get earth's XYZ after moving plates but before the remesh
-        heightsAfter = self.heights
-        radius = heightsAfter + self.earthRadius
-        earthAfterXYZ = EarthAssist.polarToCartesian(radius, self.movedLonLat[:, 0], self.movedLonLat[:, 1])
-        
-        #Calculate the tectonic displacements, and set maxTectonicDisp
-        tectonicDisp = (earthAfterXYZ - earthBeforeXYZ)
-        tectonicDisp *= maxTectonicDisp / np.max(np.linalg.norm(tectonicDisp, axis=1))
-        self.tectonicDisplacementHistory.append(tectonicDisp)
+    #Set current plateIds, rotations and plate boundaries
+    def setPlateData(self, time):
+        self.plateIds = self.getPlateIdsAtTime(time)
+        self.rotations = self.getRotations(self.plateIds, time)
+        self.boundaries = Boundaries(time, self, self.plateIds, self.rotations,
+                                    baseUplift = self.baseUplift,
+                                    distTransRange = self.distTransRange, 
+                                    numToAverageOver = self.numToAverageOver,
+                                    baseLowering = self.baseLowering,
+                                    maxLoweringDistance = self.maxLoweringDistance,
+                                    minMaxLoweringHeights = self.minMaxLoweringHeights
+                                    )
     
+    #================================================== Visualizations ========================================================
     #Get XYZ coordinates of earth at specified iteration (the default iteration is the latest iteration)
     def getEarthXYZ(self, iteration=-1, amplifier=None):
         if amplifier == None:
@@ -174,9 +191,9 @@ class Earth:
     
     #Create a plot of earth suitable for jupyter notebook at specified iteration
     def showEarth(self, iteration=-1):
-        earthMesh = self.getEarthMesh(iteration=iteration)
+        earthMesh = self.getEarthMesh(iteration=iteration)  
         plotter = pv.PlotterITK()
-        plotter.add_mesh(earthMesh, scalars=self.heightHistory[iteration])
+        plotter.add_mesh(earthMesh, scalars='heights')
         plotter.show(window_size=[800, 400])
     
     #Create an animation of the earth which is saved as an mp4 file in the current directory
@@ -207,7 +224,46 @@ class Earth:
                 plotter.write_frame()
         plotter.close()
     
+    #Save results of this simulation as an NPZ file
+    def saveDataAsNPZ(self):
+        if not os.path.isdir(self.npzSaveDirectory):
+            os.mkdir('./{}'.format(self.npzSaveDirectory))
+        
+        #Find a file name that does not already exist
+        fileNumber = 1
+        thisFileDir = './{}/TectonicEarth{}.npz'.format(self.npzSaveDirectory, fileNumber)
+        while os.path.isdir(thisFileDir):
+            fileNumber += 1
+            thisFileDir = './{}/TectonicEarth{}.npz'.format(self.npzSaveDirectory, fileNumber)
+        self.thisFileDir = thisFileDir
+        
+        #Save the file
+        np.savez_compressed(thisFileDir, 
+                timeHistory=self.timeHistory, 
+                heightHistory=self.heightHistory, 
+                tectonicDispHistory=self.tectonicDispHistory)
+    
+    #Load tectonic earth data from a saved NPZ file
+    def loadDataFromNPZ(self, fileNumber):
+        self.thisFileDir = './{}/TectonicEarth{}.npz'.format(self.npzSaveDirectory, fileNumber)
+        npzFile = np.load(self.thisFileDir)
+        self.timeHistory = npzFile['timeHistory']
+        self.heightHistory = npzFile['heightHistory']
+        self.tectonicDispHistory = npzFile['tectonicDispHistory']
+        
+        self.startTime = np.max(self.timeHistory)
+        self.endTime = np.min(self.timeHistory)
+        self.deltaTime = self.timeHistory[0] - self.timeHistory[1]
+    
     #=================================================== Move Tectonic Plates =================================================
+    #Run algorithm for moving plates and remeshing the sphere
+    def movePlatesAndRemesh(self):
+        movedEarthXYZ = self.movePlates(self.plateIds, self.rotations)
+        movedLonLat = EarthAssist.cartesianToPolarCoords(movedEarthXYZ)
+        self.movedLonLat = np.stack((movedLonLat[1], movedLonLat[2]), axis=1)
+        heights = self.remeshSphere(self.movedLonLat)
+        self.heightHistory.append(heights)
+    
     #Get stage rotation data from pygplates and return a scipy rotation
     def getRotations(self, plateIds, time):
         rotations = {}
@@ -234,14 +290,14 @@ class Earth:
         heights = self.heights
         
         #Create clyinder
-        m = self.thetaResolution
-        n = self.phiResolution
-        h = np.max(movedLonLat[:, 1]) - np.min(movedLonLat[:, 1])
-        cylinderRadius = m * h / (np.pi * n * 2)
+        thetaRes = self.thetaResolution
+        phiRes = self.phiResolution
+        northToSoutDist = np.max(movedLonLat[:, 1]) - np.min(movedLonLat[:, 1])
+        cylinderRadius = thetaRes * northToSoutDist / (np.pi * phiRes * 2)
         cylinderXYZ = EarthAssist.cylindricalToCartesian(cylinderRadius, movedLonLat[:, 0], movedLonLat[:, 1])
 
         #Run the clustering algorithm
-        threshHoldDist = self.clusterThresholdProportion * 360 / m
+        threshHoldDist = self.clusterThresholdProportion * 360 / thetaRes
         cluster = DBSCAN(eps=threshHoldDist, min_samples=self.minClusterSize).fit(cylinderXYZ)
         isCluster = (cluster.labels_ != -1)
         
@@ -266,6 +322,19 @@ class Earth:
         whereNAN = np.argwhere(np.isnan(newHeights))
         newHeights[whereNAN] = griddata(movedLonLat, heightsForRemesh, self.lonLat[whereNAN], method='nearest')
         return newHeights
+    
+    #Keep track of tectonic displacements for Gospl
+    def createTectonicDisplacements(self):
+        earthBeforeXYZ = self.getEarthXYZ(amplifier=1, iteration=-2)
+        
+        #Get earth's XYZ after moving plates but before the remesh
+        heightsAfter = self.heights
+        radius = heightsAfter + self.earthRadius
+        earthAfterXYZ = EarthAssist.polarToCartesian(radius, self.movedLonLat[:, 0], self.movedLonLat[:, 1])
+        
+        #Calculate the tectonic displacements in metres per year
+        tectonicDisp = (earthAfterXYZ - earthBeforeXYZ) / (self.deltaTime * 1000000)
+        self.tectonicDispHistory.append(tectonicDisp)
 
     #========================================== Reading From Data Sources =============================================
     #Read initial landscape data at specified time from file which is in the form of (lon, lat, height)
@@ -276,7 +345,12 @@ class Earth:
         
         #Get path of initial landscape data file at specified time
         paleoDemsPath = Path(initialElevationFilesDir)
-        initialLandscapePath = list(paleoDemsPath.glob('**/*%03.fMa.csv'%time))[0]
+        
+        #Try reading the specified elevation file, and raise an error if it does not exist
+        try:
+            initialLandscapePath = list(paleoDemsPath.glob('**/*%03.fMa.csv'%time))[0]
+        except IndexError:
+            raise IndexError("Unable to initialise earth. There is no initial topography data file at the specified time. Try changing earth's initial startTime variable.")
         
         #Read data and split by newline and commas to create numpy array of data
         initialLandscapeFileLines = open(initialLandscapePath).read().split('\n')[1:-1]

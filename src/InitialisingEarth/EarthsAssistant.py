@@ -1,6 +1,7 @@
 
 import numpy as np
 import pyvista as pv
+from scipy import special
 
 class EarthAssist:
     
@@ -71,6 +72,12 @@ class EarthAssist:
     @staticmethod
     def gaussian(x, mean=0, variance=0.25):
         return np.exp(-((x - mean)**2) / variance)
+
+    #Skewed gaussian density function
+    @staticmethod
+    def skewedGaussian(x, alpha=8, variance=0.25):
+        skewedGauss = EarthAssist.gaussian(x, variance=variance) * (1 + special.erf(alpha * x))
+        return skewedGauss
 
     #Sigmoid function used for  height transfer of diverge lowering
     @staticmethod

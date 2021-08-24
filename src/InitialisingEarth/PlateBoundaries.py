@@ -90,6 +90,7 @@ class Boundaries:
                 distTransRange = 1000, 
                 numToAverageOver = 10,
                 
+                #Attrbutes related to diverge lowering
                 baseLowering = 2000,
                 maxLoweringDistance = 200000,
                 minMaxLoweringHeights = 8000
@@ -111,13 +112,12 @@ class Boundaries:
         self.plateCentres = self.getPlateCentres()
         self.plateBoundaries = self.createPlateBoundariesAtTime()
         self.idToSubBound = self.getSubductionBoundsForEachPlateId()
-        self.distanceTransferFunction = self.getDistanceTransferFunction()
         self.setCollisionSpeeds()
         
         self.baseLowering = baseLowering
         self.maxLoweringDistance = maxLoweringDistance
         self.minMaxLoweringHeights = minMaxLoweringHeights
-        
+    
     
     #Create a dictionary containing plate Ids as keys and plate centres as values
     def getPlateCentres(self):
@@ -182,27 +182,6 @@ class Boundaries:
                     idToSubBound[idx] = []
                 idToSubBound[idx].append(bound)
         return idToSubBound
-    
-    #Template curve for the distance transfer for subduction uplift
-    def getDistanceTransferFunction(self):
-        distTransPoints = np.array([
-            [-100, 0.0],
-            [-50, 0],
-            [-10, 0],
-            [-1.0, 0.0],
-            [-0.101, 0.0],
-            [-0.1, 0.0],
-            [0, 0.4],
-            [0.19, 1.0],
-            [0.21, 1.0],
-            [0.5, 0.5],
-            [0.99, 0.0],
-            [1.0, 0.0],
-            [5.0, 0.0],
-            [50.0, 0.0],
-            [100.0, 0.0]
-            ])
-        return interp1d(distTransPoints[:, 0], distTransPoints[:, 1], kind='quadratic')
 
     #Since we are ignoring plate boundaries with not exactly two neighbouring plates,
     #Some plate boundaries will have no coordinates, so we ignore those
@@ -213,6 +192,37 @@ class Boundaries:
             if len(s.get_sharing_resolved_topologies()) == 2:
                 ignoreThis = False
         return ignoreThis
+    
+    #========================================== Code Related to Ocean Floors ==========================================
+    #Get coordinates and line points of all diverging plate boundary locations
+    def getOceanicRifts(self):
+        riftXYZ, riftLinePoints, riftSpeeds = [], [], []
+        for bound in self.plateBoundaries:
+            if bound.gpmlBoundType == 'gpml:MidOceanRidge':
+                for i in range(bound.lineCentres.shape[0]):
+                    if bound.collisionSpeed[i] < 0:
+                        riftXYZ.append(bound.lineCentres[i])
+                        riftLinePoints.append(bound.linePoints[i])
+                        riftSpeeds.append(bound.collisionSpeed[i])
+        return np.array(riftXYZ), np.array(riftLinePoints), np.array(riftSpeeds)
+
+    #Get distance and speeds from the sphere's vertices to oceanic rifts
+    def getDistAndSpeedToRifts(self):
+        riftXYZ, riftLinePoints, riftSpeeds = self.getOceanicRifts()        
+        distIds = cKDTree(riftXYZ).query(self.earth.sphereXYZ, k=10)[1]
+        distIds[distIds >= riftXYZ.shape[0]] = riftXYZ.shape[0]-1
+        closestLinePoints = riftLinePoints[distIds]
+        riftSpds = riftSpeeds[distIds]
+        distToRift = Boundaries.getDistsToLinesSeg(self.earth.sphereXYZ, closestLinePoints[:, 0])
+        riftSpds = np.mean(riftSpds, axis=1)
+        return distToRift, riftSpds
+
+    #Approximate the initial ocean floor age based on distance and speed to oceanic rifts
+    def getOceanFloorAge(self, ageMultiplier=2, avoidZeroDivision=10):
+        distToRift, riftSpeeds = self.getDistAndSpeedToRifts()
+        age = -distToRift / (riftSpeeds + avoidZeroDivision)
+        age[self.earth.heights>0] = np.max(age)
+        return ageMultiplier * age
     
     #================================================== Distance And Speeds Initialization =======================================================
     #We set the collision speed attribute for points in our plate boundary objects
@@ -271,13 +281,16 @@ class Boundaries:
         return speeds, directions
     
     #========================================= Code For Diverging Plates =================================================
-    
     def getDivergeLowering(self, gaussMean=0, gaussVariance=0.25, sigmoidCentre=-0.1, sigmoidSteepness=6):
-        divXYZ, divLinePoints = self.getDivergingBoundaries()
-        distToDivs = self.getDistanceToDivergence(divXYZ, self.earth.sphereXYZ, divLinePoints)
+        distToDivs = self.setDistanceToDivergence()
         distanceTransfer = EarthAssist.gaussian(distToDivs / self.maxLoweringDistance, mean=gaussMean, variance=gaussVariance)
         heightTransfer = EarthAssist.sigmoid(self.earth.heights / self.minMaxLoweringHeights, centre=sigmoidCentre, steepness=sigmoidSteepness)
         return (- self.baseLowering * distanceTransfer * heightTransfer)
+    
+    def setDistanceToDivergence(self):
+        divXYZ, divLinePoints = self.getDivergingBoundaries()
+        self.distToDivs = self.getDistanceToDivergence(divXYZ, self.earth.sphereXYZ, divLinePoints)
+        return self.distToDivs
     
     #Get coordinates and line points of all diverging plate boundary locations
     def getDivergingBoundaries(self):
@@ -301,20 +314,20 @@ class Boundaries:
     #========================================= Code For Getting Uplifts ==================================================
     #Get subduction uplifts using speed and distance transfers.
     def getUplifts(self):
-        speedTransfer, distTransfer = self.getTransfers()
-        uplifts = distTransfer * speedTransfer
+        self.speedTransfer, distTransfer = self.getUpliftTransfers()
+        uplifts = distTransfer * self.speedTransfer
         uplifts[uplifts <= 0.0001] = 0.0001
         uplifts /= np.max(uplifts)
         uplifts *= self.baseUplift
         return uplifts
     
     #Calculates transfers for all plates on the sphere
-    def getTransfers(self):
+    def getUpliftTransfers(self):
         plateIds = self.plateIds
         sphereXYZ = self.earth.sphereXYZ
         speedTransfer = np.zeros(sphereXYZ.shape[0])
         angleTransfer = np.zeros(sphereXYZ.shape[0])
-        distToSubBounds = np.zeros(sphereXYZ.shape[0])
+        distToSubBounds = np.ones(sphereXYZ.shape[0]) * 1000
         
         for idx in np.unique(plateIds):
             if (idx not in self.idToSubBound.keys()):
@@ -329,10 +342,7 @@ class Boundaries:
         
         #Calculate the distance transfer
         dTransInput = distToSubBounds / (self.distTransRange * angleTransfer + 0.01)
-        dTransInput[dTransInput>=100] = 100
-        dTransInput[dTransInput<= -100] = -100
-        
-        distTransfer = self.distanceTransferFunction(dTransInput) * (dTransInput <= 1.01)
+        distTransfer = EarthAssist.skewedGaussian(dTransInput)        
         return speedTransfer, distTransfer
     
     #Calculates transfers one plate at a time
@@ -376,10 +386,6 @@ class Boundaries:
         linePoints = np.array(linePoints)
         lineLengths = np.linalg.norm(linePoints[:, 0, :] - linePoints[:, 1, :], axis=1)
         return np.array(boundXYZ), boundSpeed, np.array(boundDirection), linePoints, lineLengths
-
-
-    
-    
     
     #Get distance from line segments
     @staticmethod
@@ -444,6 +450,10 @@ class Boundaries:
         return directionToBound
     
     #================================================== Functions for Visualizations ========================================================
+    
+    def getBoundaryMesh(self):
+        return self.getBoundaryLines(self.plateBoundaries)
+    
     #Given a list of plate boundaries, create pyvista mesh object of boundary lines
     @staticmethod
     def getBoundaryLines(bounds):

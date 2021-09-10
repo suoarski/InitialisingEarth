@@ -158,6 +158,7 @@ class Earth:
             self.heights += self.boundaries.getDivergeLowering()
         if self.movePlates:
             self.movePlatesAndRemesh()
+        self.heightHistory.append(self.heights)
         if self.useGospl:
             self.createTectonicDisplacements()
     
@@ -276,6 +277,38 @@ class Earth:
         self.deltaTime = self.timeHistory[0] - self.timeHistory[1]
     
     #=================================================== Move Tectonic Plates =================================================
+    #Main function to call for moving plates and remeshing the sphere
+    def movePlatesAndRemesh(self):
+        movedEarthXYZ = self.movePlates(self.plateIds, self.rotations)
+        movedLonLat = EarthAssist.cartesianToPolarCoords(movedEarthXYZ)
+        self.movedLonLat = np.stack((movedLonLat[1], movedLonLat[2]), axis=1)
+        self.interpolateScalars()
+    
+    #Interpolate scalars after moving tectonic plates
+    def interpolateScalars(self):
+        self.setRemeshClusters()
+        self.heights = self.interpolateScalar(np.copy(self.heights))
+        self.oceanFloorAge = self.interpolateScalar(np.copy(self.oceanFloorAge))
+        self.oceanFloorAge += self.deltaTime
+
+    #Function based on interpolateHeights() from earth's remesh algorithm
+    def interpolateScalar(self, scalar):
+        scalarForRemesh = self.prepareScalarsForRemesh(scalar)
+        movedLonLat = self.movedLonLat
+        newScalar = griddata(movedLonLat, scalarForRemesh, self.lonLat)
+        whereNAN = np.argwhere(np.isnan(newScalar))
+        newScalar[whereNAN] = griddata(movedLonLat, scalarForRemesh, self.lonLat[whereNAN], method='nearest')
+        return newScalar
+        
+    #To prepare scalars for interpolation, we set scalars of overlaping vertices to the maximum of their neighbours
+    def prepareScalarsForRemesh(self, scalar):
+        isCluster = self.isCluster
+        clusterPointsNeighboursId = self.clusterPointsNeighboursId
+        scalarsInCluster = scalar[isCluster]
+        neighbourScalars = scalarsInCluster[clusterPointsNeighboursId[:, 1:]]
+        scalar[isCluster] = np.max(neighbourScalars, axis=1)
+        return scalar
+    
     #Create cylinder of earth such that vertices are all equally spaced apart
     #Overriding plates can then be identified as vertices being relatively closer to each other
     def createEarthCylinder(self):
@@ -301,37 +334,6 @@ class Earth:
         pointsInClusterLonLat = cylinderXYZ[self.isCluster]
         clusterKDTree = cKDTree(pointsInClusterLonLat).query(pointsInClusterLonLat, k=self.numOfNeighbsForRemesh+1)
         self.clusterPointsNeighboursId = clusterKDTree[1]
-    
-    #Interpolate scalars after moving tectonic plates
-    def interpolateScalars(self):
-        self.setRemeshClusters()
-        self.heightHistory.append(self.interpolateScalar(np.copy(self.heights)))
-        self.oceanFloorAge = self.interpolateScalar(np.copy(self.oceanFloorAge))
-
-    #Function based on interpolateHeights() from earth's remesh algorithm
-    def interpolateScalar(self, scalar):
-        scalarForRemesh = self.prepareScalarsForRemesh(scalar)
-        movedLonLat = self.movedLonLat
-        newScalar = griddata(movedLonLat, scalarForRemesh, self.lonLat)
-        whereNAN = np.argwhere(np.isnan(newScalar))
-        newScalar[whereNAN] = griddata(movedLonLat, scalarForRemesh, self.lonLat[whereNAN], method='nearest')
-        return newScalar
-        
-    #To prepare scalars for interpolation, we set scalars of overlaping vertices to the maximum of their neighbours
-    def prepareScalarsForRemesh(self, scalar):
-        isCluster = self.isCluster
-        clusterPointsNeighboursId = self.clusterPointsNeighboursId
-        scalarsInCluster = scalar[isCluster]
-        neighbourScalars = scalarsInCluster[clusterPointsNeighboursId[:, 1:]]
-        scalar[isCluster] = np.max(neighbourScalars, axis=1)
-        return scalar
-    
-    #Main function to call for moving plates and remeshing the sphere
-    def movePlatesAndRemesh(self):
-        movedEarthXYZ = self.movePlates(self.plateIds, self.rotations)
-        movedLonLat = EarthAssist.cartesianToPolarCoords(movedEarthXYZ)
-        self.movedLonLat = np.stack((movedLonLat[1], movedLonLat[2]), axis=1)
-        self.interpolateScalars()
     
     #Move tectonic plates along the sphere by applying rotations to vertices with appropriate plate ids
     def movePlates(self, plateIds, rotations):

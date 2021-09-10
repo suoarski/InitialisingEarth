@@ -208,7 +208,7 @@ class Boundaries:
 
     #Get distance and speeds from the sphere's vertices to oceanic rifts
     def getDistAndSpeedToRifts(self):
-        riftXYZ, riftLinePoints, riftSpeeds = self.getOceanicRifts()        
+        riftXYZ, riftLinePoints, riftSpeeds = self.getOceanicRifts()
         distIds = cKDTree(riftXYZ).query(self.earth.sphereXYZ, k=10)[1]
         distIds[distIds >= riftXYZ.shape[0]] = riftXYZ.shape[0]-1
         closestLinePoints = riftLinePoints[distIds]
@@ -450,6 +450,19 @@ class Boundaries:
         return directionToBound
     
     #================================================== Functions for Visualizations ========================================================
+    #Create pyvista mesh object of mid oceanic ridges
+    def getRidgeMesh(self):
+        ridgeXYZ, lineConnectivity, xyzCount = [], [], 0
+        for bound in self.plateBoundaries:
+            if bound.gpmlBoundType == 'gpml:MidOceanRidge':
+                numOfPoints = bound.XYZ.shape[0]
+                lineConnectivity.append(numOfPoints)
+                lineID = np.arange(numOfPoints) + xyzCount
+                for i in range(numOfPoints):
+                    ridgeXYZ.append(bound.XYZ[i])
+                    lineConnectivity.append(lineID[i])
+                xyzCount += numOfPoints
+        return pv.PolyData(np.array(ridgeXYZ), lines=lineConnectivity)
     
     def getBoundaryMesh(self):
         return self.getBoundaryLines(self.plateBoundaries)

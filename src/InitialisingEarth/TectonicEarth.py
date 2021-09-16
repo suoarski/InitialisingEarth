@@ -47,6 +47,12 @@ class Earth:
                  numOfNeighbsForRemesh = 6,
                  clusterThresholdProportion = 300 / 360,
                  
+                 #Parameters related to ocean floor formation
+                 ageConst = 350, 
+                 maxDepth = 5500,
+                 riftDepth = 2500, 
+                 thresholdDepth = -2000,
+                 
                  #If any of these parameters are None, we use their default directory loctations
                  movieOutputDir = None,
                  npzSaveDirectory = None,
@@ -99,6 +105,12 @@ class Earth:
         self.clusterThresholdProportion = clusterThresholdProportion
         self.numOfNeighbsForRemesh = numOfNeighbsForRemesh
         self.minClusterSize = minClusterSize
+        
+        #Attributes related to ocean floor formation
+        self.ageConst = ageConst
+        self.maxDepth = maxDepth
+        self.riftDepth = riftDepth
+        self.thresholdDepth = thresholdDepth
         
         #Set directory related attributes
         self.initialElevationFilesDir = initialElevationFilesDir
@@ -190,7 +202,21 @@ class Earth:
         earthXYZ = self.getEarthXYZ(iteration=iteration, amplifier=amplifier)
         earthMesh = pv.PolyData(earthXYZ, self.earthFaces)
         earthMesh['heights'] = self.heightHistory[iteration]
+        earthMesh['oceanFloorAge'] = self.oceanFloorAge
         return earthMesh
+    
+    #Get a copy of earth with plates moved but before running the remesh algorithm
+    def getMovedMesh(self, iteration=-1, amplifier=None):
+        if amplifier == None:
+            amplifier = self.heightAmplificationFactor
+        movedEarthXYZ = self.movePlates(self.plateIds, self.rotations)
+        movedLonLat = EarthAssist.cartesianToPolarCoords(movedEarthXYZ)
+        self.movedLonLat = np.stack((movedLonLat[1], movedLonLat[2]), axis=1)
+        exageratedRadius = self.heightHistory[-1] * amplifier + self.earthRadius
+        movedEarthXYZ = EarthAssist.polarToCartesian(exageratedRadius, self.movedLonLat[:, 0], self.movedLonLat[:, 1])
+        movedMesh = pv.PolyData(movedEarthXYZ, self.earthFaces)
+        movedMesh['heights'] = self.heightHistory[iteration]
+        return movedMesh
     
     #For all you flat earth believers out there, this function is dedicated to you!!!
     def getFlatEarthXYZ(self, iteration=-1, amplifier=None):
@@ -291,7 +317,7 @@ class Earth:
         self.oceanFloorAge = self.interpolateScalar(np.copy(self.oceanFloorAge))
         self.oceanFloorAge += self.deltaTime
 
-    #Function based on interpolateHeights() from earth's remesh algorithm
+    #The actual function that does the scalar interpolation after moving plates
     def interpolateScalar(self, scalar):
         scalarForRemesh = self.prepareScalarsForRemesh(scalar)
         movedLonLat = self.movedLonLat
@@ -363,7 +389,22 @@ class Earth:
         earthAfterXYZ = EarthAssist.polarToCartesian(radius, self.movedLonLat[:, 0], self.movedLonLat[:, 1])
         tectonicDisp = (earthAfterXYZ - earthBeforeXYZ) / (self.deltaTime * 1000000)
         self.tectonicDispHistory.append(tectonicDisp)
-        
+    
+    #========================================== Ocean Floor Generation ================================================
+    def estimateOceanDepthFromAge(self, age):
+        depth = self.riftDepth + self.ageConst * np.abs(age)**0.5
+        depth[depth>self.maxDepth] = self.maxDepth
+        return - depth
+    
+    #Any value bellow the threshold depth will be set to our approximate ocean depth
+    #Should be used once (optionally) during the initialization stage of earth.
+    def setApproximateOceanDepths(self):
+        heights = self.heights
+        isBellowThreshold = (heights <= self.thresholdDepth)
+        oceanDepth = self.estimateOceanDepthFromAge(self.oceanFloorAge)
+        self.heights[isBellowThreshold] = oceanDepth[isBellowThreshold]
+        self.heightHistory[-1] = self.heights
+    
     #========================================== Reading From Data Sources =============================================
     #Read initial landscape data at specified time from file which is in the form of (lon, lat, height)
     @staticmethod

@@ -66,7 +66,8 @@ class Earth:
                  useKilometres = False,
                  moveTectonicPlates = True,
                  simulateSubduction = True,
-                 useDivergeLowering = True
+                 useDivergeLowering = True,
+                 lowerOceanFloors = True
                 ):
         
         #Set default directory locations if none other specified
@@ -126,17 +127,21 @@ class Earth:
         self.useDivergeLowering = useDivergeLowering
         self.moveTectonicPlates = moveTectonicPlates
         self.simulateSubduction = simulateSubduction
+        self.lowerOceanFloors = lowerOceanFloors
         
         #Get initial topological data and convert to from kilometres to metres if chosen so
         initData = self.getInitialEarth(self.startTime, initialElevationFilesDir=initialElevationFilesDir)
-        self.earthFaces = pv.PolyData(initData).delaunay_2d().faces
+        self.lon = initData[:, 0]
+        self.lat = initData[:, 1]
+        self.lonLat = np.stack((initData[:, 0], initData[:, 1]), axis=1)
+        
+        #Create a flat grid of lon lat coordinates to create an array of pyvista faces suitable for earth
+        flatLonLat = np.stack((initData[:, 0], initData[:, 1], np.zeros(initData[:, 0].shape)), axis=1)
+        self.earthFaces = pv.PolyData(flatLonLat).delaunay_2d().faces
         if not useKilometres:
             initData[:, 2] *= 1000
         
         #Initiate coordinate related data
-        self.lon = initData[:, 0]
-        self.lat = initData[:, 1]
-        self.lonLat = np.stack((initData[:, 0], initData[:, 1]), axis=1)
         self.sphereXYZ = EarthAssist.polarToCartesian(self.earthRadius, initData[:, 0], initData[:, 1])
         self.pointFeatures = self.createPointFeatures(initData[:, 0], initData[:, 1])
         self.thetaResolution = len(np.unique(initData[:, 0])) - 1
@@ -152,6 +157,7 @@ class Earth:
         self.simulationTimes = np.arange(self.startTime, self.endTime-self.deltaTime, -self.deltaTime)
         self.setPlateData(self.startTime)
         self.oceanFloorAge = self.boundaries.getOceanFloorAge()
+        self.setApproximateOceanDepths()
     
     #Run the simulation over all specified times
     def runTectonicSimulation(self):
@@ -170,6 +176,8 @@ class Earth:
             self.heights += self.boundaries.getDivergeLowering()
         if self.movePlates:
             self.movePlatesAndRemesh()
+        if self.lowerOceanFloors:
+            self.updateOceanFloors()
         self.heightHistory.append(self.heights)
         if self.useGospl:
             self.createTectonicDisplacements()
@@ -310,13 +318,96 @@ class Earth:
         self.movedLonLat = np.stack((movedLonLat[1], movedLonLat[2]), axis=1)
         self.interpolateScalars()
     
+    
+    #Interpolate scalars after moving tectonic plates
+    def interpolateScalars(self):
+        self.setRemeshClusters()
+        missingXYZ, missingAge, missingHeight = self.getRidgeScalars()
+        self.heights = self.interpolateScalar(np.copy(self.heights), missingXYZ, missingHeight)
+        oldFloorAge = np.copy(self.oceanFloorAge) + self.deltaTime
+        self.oceanFloorAge = self.interpolateScalar(oldFloorAge, missingXYZ, missingAge)
+    
+    #The actual function that does the scalar interpolation after moving plates
+    #This is also where we add the missing vertices to the main mesh
+    def interpolateScalar(self, scalar, missingXYZ, missingScalar):
+        scalarForRemesh = self.prepareScalarsForRemesh(scalar)
+        
+        R, lon, lat = EarthAssist.cartesianToPolarCoords(missingXYZ)
+        missingLonLat = np.stack((lon, lat), axis=1)
+        
+        combinedLonLat = np.concatenate((self.movedLonLat, missingLonLat), axis=0)
+        combinedScalars = np.concatenate((scalar, missingScalar), axis=0)
+        
+        newScalar = griddata(combinedLonLat, combinedScalars, self.lonLat)
+        whereNAN = np.argwhere(np.isnan(newScalar))
+        newScalar[whereNAN] = griddata(combinedLonLat, combinedScalars, self.lonLat[whereNAN], method='nearest')
+        return newScalar
+    
+    def removeTooCloseToMesh(self, ridgePoints, thresholdDistance=50000):
+        movedSmoothMesh = self.getMovedMesh(amplifier=0)
+        distToMesh = cKDTree(movedSmoothMesh.points).query(ridgePoints)[0]
+        isFarEnough = (distToMesh > thresholdDistance)
+        ridgePoints = ridgePoints[isFarEnough]
+        return ridgePoints
+
+    #Get ridge 
+    def getRidgePoints(self):
+        ridgeMesh = self.boundaries.getRidgeMesh()
+        ridgePoints, ridgeLines = np.array(ridgeMesh.points), np.array(ridgeMesh.lines)
+        ridgePoints, ridgeLines = self.subdivideLineMesh(ridgePoints, ridgeLines)
+        ridgePoints = self.removeTooCloseToMesh(ridgePoints)
+        return ridgePoints
+
+    def getRidgeScalars(self):
+        ridgePoints = self.getRidgePoints()
+        missingAge = np.zeros(ridgePoints.shape[0])
+        missingHeights = self.estimateOceanDepthFromAge(missingAge)
+        return ridgePoints, missingAge, missingHeights
+    
+    def subdivideLineMesh(self, points, lines, numOfSplits=10):
+        splits = np.arange(0, 1, 1/numOfSplits) + 1/numOfSplits
+        newPoints, newLines, padding, newIndex = [], [], 1, 0
+        iterator = iter(range(lines.shape[0]-1))
+        for i in iterator:
+            if (padding == 1):
+                padding = lines[i]
+                newPoints.append(points[lines[i+1]])
+                newLines.append((padding) * numOfSplits + 1)
+                newLines.append(newIndex)
+                newIndex += 1
+            else:
+                padding -= 1
+                point0 = points[lines[i]]
+                point1 = points[lines[i+1]]
+                for split in splits:
+                    newPoints.append(point0 + (point1 - point0) * split)
+                    newLines.append(newIndex)
+                    newIndex += 1
+                if padding == 1:
+                    next(iterator, None)
+        return np.array(newPoints), np.array(newLines)
+    
+    #Function to apply changes in ocean floor depths
+    def updateOceanFloors(self, thresholdDepth=-2000, ageToStop=100):
+        dt = self.deltaTime
+        heights = self.heights
+        floorAge = self.oceanFloorAge
+        isYoungEnough = (floorAge - dt < ageToStop)
+        isBellowThreshold = (heights <= thresholdDepth)
+        isNotTooDeep = (heights >= -5500)
+        updateHere = isBellowThreshold * isYoungEnough * isNotTooDeep
+        heights[updateHere] -= 350 * dt / (1 + 2 * floorAge[updateHere]**0.5)
+        self.heights = heights
+    
+    '''
     #Interpolate scalars after moving tectonic plates
     def interpolateScalars(self):
         self.setRemeshClusters()
         self.heights = self.interpolateScalar(np.copy(self.heights))
         self.oceanFloorAge = self.interpolateScalar(np.copy(self.oceanFloorAge))
         self.oceanFloorAge += self.deltaTime
-
+    
+    
     #The actual function that does the scalar interpolation after moving plates
     def interpolateScalar(self, scalar):
         scalarForRemesh = self.prepareScalarsForRemesh(scalar)
@@ -325,6 +416,7 @@ class Earth:
         whereNAN = np.argwhere(np.isnan(newScalar))
         newScalar[whereNAN] = griddata(movedLonLat, scalarForRemesh, self.lonLat[whereNAN], method='nearest')
         return newScalar
+    '''
         
     #To prepare scalars for interpolation, we set scalars of overlaping vertices to the maximum of their neighbours
     def prepareScalarsForRemesh(self, scalar):

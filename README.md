@@ -33,6 +33,8 @@ https://github.com/pedro-ricardo/Parallel-DBSCAN
 
 ### Running earthinit
 
+To run the code once install you can download the following [repository](https://cloudstor.aarnet.edu.au/plus/s/e4aTt4kJGL9IApq) that contains the required input files up to 100 Ma (watch out it is quite big about 1 Gb!
+
 ```python
 from earthinit.model import Model as sim
 

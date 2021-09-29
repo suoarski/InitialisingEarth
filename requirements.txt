@@ -1,0 +1,13 @@
+numpy
+scipy
+mpi4py
+Cython
+h5py
+pandas
+ruamel.yaml
+meshio
+meshplex
+xarray
+stripy
+numba
+boost

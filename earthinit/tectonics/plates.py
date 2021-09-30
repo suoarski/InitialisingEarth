@@ -1,6 +1,7 @@
 import pygplates
 import numpy as np
 import pandas as pd
+from scipy import ndimage
 from time import process_time
 from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation as scpRot
@@ -43,6 +44,9 @@ class PlateInfo(object):
                 % (process_time() - t0),
                 flush=True,
             )
+
+        if self.paleoDemForce:
+            return
 
         if self.tNow > self.tEnd:
             # Get plate centres for transfer function calculation

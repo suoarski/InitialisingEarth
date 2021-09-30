@@ -242,6 +242,16 @@ class ReadYaml(object):
                 raise KeyError("Dem is not defined!")
 
             try:
+                self.paleoRainPath = paleoDict["rain"]
+            except KeyError:
+                self.paleoRainPath = None
+
+            try:
+                self.paleoDemForce = paleoDict["demforce"]
+            except KeyError:
+                self.paleoDemForce = False
+
+            try:
                 self.paleoVelocityPath = paleoDict["vel"]
             except KeyError:
                 print(

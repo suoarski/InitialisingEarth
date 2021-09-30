@@ -79,7 +79,7 @@ class EarthSurf(object):
         self.ncells = len(self.cells)
 
         # Get a xarray data from paleosurface file
-        paleoData = self._getPaleoTopo()
+        paleoData = self._getPaleoTopo(self.tStart)
 
         # Convert spherical mesh longitudes and latitudes from radian to degree
         glat = np.mod(np.degrees(grid.lats) + 90, 180.0)
@@ -89,10 +89,20 @@ class EarthSurf(object):
         # Map mesh coordinates on this dataset
         lon1 = elev.shape[0] * glon / 360.0
         lat1 = elev.shape[1] * glat / 180.0
-        coord1 = np.stack((lon1, lat1))
+        self.dataxyz = np.stack((lon1, lat1))
         self.elev = ndimage.map_coordinates(
-            elev, coord1, order=2, mode="nearest"
+            elev, self.dataxyz, order=2, mode="nearest"
         ).astype(np.float64)
+
+        if self.paleoRainPath is not None:
+            paleoData = self._getPaleoRain(self.tStart)
+            rain = paleoData.z.values.T
+            lon1 = rain.shape[0] * glon / 360.0
+            lat1 = rain.shape[1] * glat / 180.0
+            self.rainxyz = np.stack((lon1, lat1))
+            self.rain = ndimage.map_coordinates(
+                rain, self.rainxyz, order=2, mode="nearest"
+            ).astype(np.float64)
 
         # Mesh lon/lat coordinates
         meshlon, meshlat = self._cartesianToPolarCoords(self.xyz)
@@ -100,7 +110,7 @@ class EarthSurf(object):
 
         return
 
-    def _getPaleoTopo(self):
+    def _getPaleoTopo(self, time):
         """
         Earth paleosurface is read from a netcdf files containing lon, lat and elevation at a specific geological time interval.
 
@@ -114,9 +124,7 @@ class EarthSurf(object):
 
         # Get the paleosurface mesh file (as netcdf file)
         paleoDemsPath = Path(self.paleoDemsPath)
-        initialLandscapePath = list(
-            paleoDemsPath.glob("**/%dMa.nc" % int(self.tStart))
-        )[0]
+        initialLandscapePath = list(paleoDemsPath.glob("**/%dMa.nc" % int(time)))[0]
 
         # Open it with xarray
         data = xr.open_dataset(initialLandscapePath)
@@ -133,7 +141,48 @@ class EarthSurf(object):
 
         return data.sortby(data.latitude)
 
+    def _getPaleoRain(self, time):
+        """
+        Earth paleoclimate is read from a netcdf files containing lon, lat and rainfall at a specific geological time interval.
+
+        Here, we use `xarray` to open the dataset.
+
+        :return: a xarray dataset of paleoclimate
+
+        """
+
+        # Get the paleosurface mesh file (as netcdf file)
+        paleoRainPath = Path(self.paleoRainPath)
+        initialRainPath = list(paleoRainPath.glob("**/%dMa.nc" % int(time)))[0]
+
+        # Open it with xarray
+        data = xr.open_dataset(initialRainPath)
+
+        lon_name = "lon"
+        data["_lon_adjusted"] = xr.where(
+            data[lon_name] < 0, data[lon_name] + 360, data[lon_name]
+        )
+        data = data.swap_dims({lon_name: "_lon_adjusted"}).drop(lon_name)
+        data = data.rename({"_lon_adjusted": lon_name})
+
+        return data.sortby(["lat", "lon"], ascending=True)
+
     def _moveSurface(self):
+        """
+        Move initial mesh according to each plate velocity field. To move the tectonic plates, we use `pygplates`.
+
+        The function initialises a new Numpy array `nxyz` that contains the mesh coordinates after displacement.
+        """
+
+        self.nxyz = self.xyz.copy()
+        for idx in np.unique(self.plateIds):
+            rot = self.rotations[idx]
+            self.nxyz[self.plateIds == idx] = rot.apply(self.nxyz[self.plateIds == idx])
+            self.nxyz[self.plateIds == idx]
+
+        return
+
+    def _forceSurface(self):
         """
         Move initial mesh according to each plate velocity field. To move the tectonic plates, we use `pygplates`.
 
@@ -166,15 +215,16 @@ class EarthSurf(object):
         self.clustZ = self.elev.copy()
         self.clustZ[idCluster] = np.max(neighbourHeights, axis=1)
 
-        # Get tectonics of nearest neighbours
-        idCluster = self.isCluster > 0
-        tectoInCluster = self.uplifts[idCluster]
-        neighbourTecto = tectoInCluster[self.clustNgbhs]
+        if not self.paleoDemForce:
+            # Get tectonics of nearest neighbours
+            idCluster = self.isCluster > 0
+            tectoInCluster = self.uplifts[idCluster]
+            neighbourTecto = tectoInCluster[self.clustNgbhs]
 
-        # For points in cluster, set new heights to the maximum height of
-        # nearest neighbours
-        self.clustTec = self.uplifts.copy()
-        self.clustTec[idCluster] = np.max(neighbourTecto, axis=1)
+            # For points in cluster, set new heights to the maximum height of
+            # nearest neighbours
+            self.clustTec = self.uplifts.copy()
+            self.clustTec[idCluster] = np.max(neighbourTecto, axis=1)
 
         return
 
@@ -203,7 +253,8 @@ class EarthSurf(object):
         self.distNbghs, self.idNbghs = self.ptree.query(self.xyz, k=self.interp)
         if self.interp == 1:
             self.interpZ = self.clustZ[self.idNbghs]
-            self.interpT = self.clustTec[self.idNbghs]
+            if not self.paleoDemForce:
+                self.interpT = self.clustTec[self.idNbghs]
         else:
             # Inverse weighting distance...
             weights = np.divide(
@@ -219,13 +270,17 @@ class EarthSurf(object):
             self.interpZ = np.divide(
                 tmp, temp, out=np.zeros_like(temp), where=temp != 0
             )
-            tmp = np.sum(weights * self.clustTec[self.idNbghs], axis=1)
-            # Vertical displacements
-            self.interpT = np.divide(
-                tmp, temp, out=np.zeros_like(temp), where=temp != 0
-            )
             if len(onIDs) > 0:
-                self.interpT[onIDs] = self.clustTec[self.idNbghs[onIDs, 0]]
+                self.interpZ[onIDs] = self.clustZ[self.idNbghs[onIDs, 0]]
+
+            if not self.paleoDemForce:
+                tmp = np.sum(weights * self.clustTec[self.idNbghs], axis=1)
+                # Vertical displacements
+                self.interpT = np.divide(
+                    tmp, temp, out=np.zeros_like(temp), where=temp != 0
+                )
+                if len(onIDs) > 0:
+                    self.interpT[onIDs] = self.clustTec[self.idNbghs[onIDs, 0]]
 
         if self.verbose:
             print(
@@ -233,6 +288,24 @@ class EarthSurf(object):
                 % (process_time() - t0),
                 flush=True,
             )
+
+        # In case we force the surface with paleoelevation maps
+        if self.paleoDemForce:
+            # Get a xarray data from paleosurface file
+            paleoData = self._getPaleoTopo(self.tNow - self.dt)
+            nelev = ndimage.map_coordinates(
+                paleoData.z.values.T, self.dataxyz, order=2, mode="nearest"
+            ).astype(np.float64)
+
+            self.interpT = nelev - self.interpZ
+            self.interpZ += self.interpT
+
+        if self.paleoRainPath is not None:
+            # Get a xarray data from paleosurface file
+            paleoData = self._getPaleoRain(self.tNow - self.dt)
+            self.rain = ndimage.map_coordinates(
+                paleoData.z.values.T, self.rainxyz, order=2, mode="nearest"
+            ).astype(np.float64)
 
         # Write for considered time step the parameters used in a gospl model
         if self.gospl is not None:

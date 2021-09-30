@@ -127,8 +127,23 @@ class WriteMesh(object):
 
             t0 = process_time()
             np.savez_compressed(
-                gosplmesh, t=self.interpT,
+                gosplmesh, z=self.interpT,
             )
+
+            if self.paleoRainPath is not None:
+                gosplmesh = (
+                    self.gospl
+                    + "/rain_"
+                    + str(self.reflvl)
+                    + "_"
+                    + str(int(self.tNow))
+                    + "Ma"
+                )
+
+                t0 = process_time()
+                np.savez_compressed(
+                    gosplmesh, r=self.rain,
+                )
 
         if self.verbose:
             print(
@@ -210,10 +225,23 @@ class WriteMesh(object):
             )
             f["uplift"][:, 0] = self.interpT
 
-            f.create_dataset(
-                "dist", shape=(self.npoints, 1), dtype="float32", compression="gzip",
-            )
-            f["dist"][:, 0] = self.distToBound
+            if self.paleoRainPath is not None:
+                f.create_dataset(
+                    "rain",
+                    shape=(self.npoints, 1),
+                    dtype="float32",
+                    compression="gzip",
+                )
+                f["rain"][:, 0] = self.rain
+
+            if not self.paleoDemForce:
+                f.create_dataset(
+                    "dist",
+                    shape=(self.npoints, 1),
+                    dtype="float32",
+                    compression="gzip",
+                )
+                f["dist"][:, 0] = self.distToBound
 
         self._save_XMF()
         self._save_XDMF()
@@ -276,10 +304,21 @@ class WriteMesh(object):
         f.write('Dimensions="%d 1">%s:/uplift</DataItem>\n' % (self.npoints, pfile))
         f.write("         </Attribute>\n")
 
-        f.write('         <Attribute Type="Scalar" Center="Node" Name="dist">\n')
-        f.write('          <DataItem Format="HDF" NumberType="Float" Precision="4" ')
-        f.write('Dimensions="%d 1">%s:/dist</DataItem>\n' % (self.npoints, pfile))
-        f.write("         </Attribute>\n")
+        if self.paleoRainPath is not None:
+            f.write('         <Attribute Type="Scalar" Center="Node" Name="rain">\n')
+            f.write(
+                '          <DataItem Format="HDF" NumberType="Float" Precision="4" '
+            )
+            f.write('Dimensions="%d 1">%s:/rain</DataItem>\n' % (self.npoints, pfile))
+            f.write("         </Attribute>\n")
+
+        if not self.paleoDemForce:
+            f.write('         <Attribute Type="Scalar" Center="Node" Name="dist">\n')
+            f.write(
+                '          <DataItem Format="HDF" NumberType="Float" Precision="4" '
+            )
+            f.write('Dimensions="%d 1">%s:/dist</DataItem>\n' % (self.npoints, pfile))
+            f.write("         </Attribute>\n")
 
         f.write("      </Grid>\n")
         f.write("    </Grid>\n")

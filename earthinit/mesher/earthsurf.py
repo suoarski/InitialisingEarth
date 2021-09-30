@@ -293,8 +293,10 @@ class EarthSurf(object):
         if self.paleoDemForce:
             # Get a xarray data from paleosurface file
             paleoData = self._getPaleoTopo(self.tNow - self.dt)
+            tmp = paleoData.z.values.T
+            tmp = ndimage.gaussian_filter(tmp, sigma=1)
             nelev = ndimage.map_coordinates(
-                paleoData.z.values.T, self.dataxyz, order=2, mode="nearest"
+                tmp, self.dataxyz, order=2, mode="nearest"
             ).astype(np.float64)
 
             self.interpT = nelev - self.interpZ

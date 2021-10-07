@@ -84,7 +84,11 @@ class EarthSurf(object):
         # Convert spherical mesh longitudes and latitudes from radian to degree
         glat = np.mod(np.degrees(grid.lats) + 90, 180.0)
         glon = np.mod(np.degrees(grid.lons) + 180.0, 360.0)
-        elev = paleoData.z.values.T
+
+        if self.gaussval > 0.0:
+            elev = ndimage.gaussian_filter(paleoData.z.values.T, sigma=self.gaussval)
+        else:
+            elev = paleoData.z.values.T
 
         # Map mesh coordinates on this dataset
         lon1 = elev.shape[0] * glon / 360.0
@@ -294,12 +298,14 @@ class EarthSurf(object):
             # Get a xarray data from paleosurface file
             paleoData = self._getPaleoTopo(self.tNow - self.dt)
             tmp = paleoData.z.values.T
-            tmp = ndimage.gaussian_filter(tmp, sigma=1)
+            tmp = ndimage.gaussian_filter(tmp, sigma=self.gaussval)
             nelev = ndimage.map_coordinates(
                 tmp, self.dataxyz, order=2, mode="nearest"
             ).astype(np.float64)
 
             self.interpT = nelev - self.interpZ
+            self.interpZ += self.interpT
+        else:
             self.interpZ += self.interpT
 
         if self.paleoRainPath is not None:

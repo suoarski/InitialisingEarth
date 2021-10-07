@@ -252,6 +252,11 @@ class ReadYaml(object):
                 self.paleoDemForce = False
 
             try:
+                self.gaussval = paleoDict["demsmth"]
+            except KeyError:
+                self.gaussval = 0.0
+
+            try:
                 self.paleoVelocityPath = paleoDict["vel"]
             except KeyError:
                 print(

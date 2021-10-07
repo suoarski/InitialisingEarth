@@ -127,7 +127,7 @@ class WriteMesh(object):
 
             t0 = process_time()
             np.savez_compressed(
-                gosplmesh, z=self.interpT,
+                gosplmesh, z=self.interpZ, t=self.interpT,
             )
 
             if self.paleoRainPath is not None:

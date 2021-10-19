@@ -45,7 +45,7 @@ class PlateInfo(object):
                 flush=True,
             )
 
-        if self.paleoDemForce:
+        if self.paleoDemForce or self.tecForce is not None:
             return
 
         if self.tNow > self.tEnd:

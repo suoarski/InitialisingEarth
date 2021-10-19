@@ -234,7 +234,7 @@ class WriteMesh(object):
                 )
                 f["rain"][:, 0] = self.rain
 
-            if not self.paleoDemForce:
+            if not self.paleoDemForce and self.tecForce is None:
                 f.create_dataset(
                     "dist",
                     shape=(self.npoints, 1),
@@ -312,7 +312,7 @@ class WriteMesh(object):
             f.write('Dimensions="%d 1">%s:/rain</DataItem>\n' % (self.npoints, pfile))
             f.write("         </Attribute>\n")
 
-        if not self.paleoDemForce:
+        if not self.paleoDemForce and self.tecForce is None:
             f.write('         <Attribute Type="Scalar" Center="Node" Name="dist">\n')
             f.write(
                 '          <DataItem Format="HDF" NumberType="Float" Precision="4" '

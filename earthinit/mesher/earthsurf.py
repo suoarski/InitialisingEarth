@@ -219,7 +219,7 @@ class EarthSurf(object):
         self.clustZ = self.elev.copy()
         self.clustZ[idCluster] = np.max(neighbourHeights, axis=1)
 
-        if not self.paleoDemForce:
+        if not self.paleoDemForce and self.tecForce is None:
             # Get tectonics of nearest neighbours
             idCluster = self.isCluster > 0
             tectoInCluster = self.uplifts[idCluster]
@@ -257,7 +257,7 @@ class EarthSurf(object):
         self.distNbghs, self.idNbghs = self.ptree.query(self.xyz, k=self.interp)
         if self.interp == 1:
             self.interpZ = self.clustZ[self.idNbghs]
-            if not self.paleoDemForce:
+            if not self.paleoDemForce and self.tecForce is None:
                 self.interpT = self.clustTec[self.idNbghs]
         else:
             # Inverse weighting distance...
@@ -277,7 +277,7 @@ class EarthSurf(object):
             if len(onIDs) > 0:
                 self.interpZ[onIDs] = self.clustZ[self.idNbghs[onIDs, 0]]
 
-            if not self.paleoDemForce:
+            if not self.paleoDemForce and self.tecForce is None:
                 tmp = np.sum(weights * self.clustTec[self.idNbghs], axis=1)
                 # Vertical displacements
                 self.interpT = np.divide(
@@ -302,8 +302,14 @@ class EarthSurf(object):
             nelev = ndimage.map_coordinates(
                 tmp, self.dataxyz, order=2, mode="nearest"
             ).astype(np.float64)
-
             self.interpT = nelev - self.interpZ
+            self.interpZ += self.interpT
+        elif self.tecForce is not None:
+            time = self.tNow - self.dt
+            paleoTecPath = Path(self.tecForce)
+            initialTecPath = list(paleoTecPath.glob("**/%dMa.npz" % int(time)))[0]
+            paleoData = np.load(initialTecPath)
+            self.interpT = paleoData["t"][:, 0]
             self.interpZ += self.interpT
         else:
             self.interpZ += self.interpT

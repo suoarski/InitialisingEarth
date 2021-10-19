@@ -252,6 +252,16 @@ class ReadYaml(object):
                 self.paleoDemForce = False
 
             try:
+                self.tecForce = paleoDict["tecforce"]
+            except KeyError:
+                self.tecForce = None
+
+            if self.tecForce is not None and self.paleoDemForce:
+                raise KeyError(
+                    "Cannot have tecforce and demforce defined in the same run"
+                )
+
+            try:
                 self.gaussval = paleoDict["demsmth"]
             except KeyError:
                 self.gaussval = 0.0

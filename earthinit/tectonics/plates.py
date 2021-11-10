@@ -21,7 +21,11 @@ class PlateInfo(object):
 
         # Get plates information at start time
         t0 = process_time()
-        self.updatePlates()
+        if self.paleoVelocityPath is not None:
+            self.updatePlates()
+        else:
+            if self.interpZ is not None:
+                self.elev = self.interpZ.copy()
         if self.verbose:
             print(
                 "\n-- Create plate informations (%0.02f seconds)"
@@ -45,7 +49,7 @@ class PlateInfo(object):
                 flush=True,
             )
 
-        if self.paleoDemForce or self.tecForce is not None:
+        if self.paleoDemForce or self.tecForce is not None or not self.tectoEarth:
             return
 
         if self.tNow > self.tEnd:
@@ -111,9 +115,15 @@ class PlateInfo(object):
 
         self.rotations = {}
         for plateId in np.unique(self.plateIds):
-            stageRotation = rotationModel.get_rotation(
-                int(self.tNow - self.dt), int(plateId), int(self.tNow)
-            )
+            if self.reverse:
+                stageRotation = rotationModel.get_rotation(
+                    int(self.tNow + self.dt), int(plateId), int(self.tNow)
+                )
+
+            else:
+                stageRotation = rotationModel.get_rotation(
+                    int(self.tNow - self.dt), int(plateId), int(self.tNow)
+                )
             stageRotation = stageRotation.get_euler_pole_and_angle()
 
             axisLatLon = stageRotation[0].to_lat_lon()
@@ -138,7 +148,6 @@ class PlateInfo(object):
             sep=r"\s+",
             engine="c",
             header=None,
-            error_bad_lines=True,
             na_filter=False,
             dtype=float,
             low_memory=False,

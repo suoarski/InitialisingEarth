@@ -45,7 +45,10 @@ class ReadYaml(object):
         self._readOut()
 
         self.radius = 6378137.0
-        self.tNow = self.tStart
+        if self.reverse:
+            self.tNow = self.tEnd
+        else:
+            self.tNow = self.tStart
         self.saveTime = self.tNow
 
         if self.clustdist is None:
@@ -88,6 +91,11 @@ class ReadYaml(object):
             self.interp = domainDict["interp"]
         except KeyError:
             self.interp = 1
+
+        try:
+            self.reverse = domainDict["reverse"]
+        except KeyError:
+            self.reverse = False
 
         try:
             gospl = domainDict["gospl"]
@@ -185,6 +193,7 @@ class ReadYaml(object):
 
         try:
             tectoDict = self.input["tecto"]
+            self.tectoEarth = True
             try:
                 self.baseUplift = tectoDict["buplift"] * 1.0e3
             except KeyError:
@@ -216,6 +225,7 @@ class ReadYaml(object):
                 self.maxLoweringDistance = 2000 * 1.0e3
 
         except KeyError:
+            self.tectoEarth = False
             self.baseUplift = 2 * 1.0e3
             self.distTransRange = 1000 * 1.0e3
             self.numToAverageOver = 10
@@ -269,11 +279,18 @@ class ReadYaml(object):
             try:
                 self.paleoVelocityPath = paleoDict["vel"]
             except KeyError:
-                print(
-                    "Key 'vel' is required and is missing in the 'paleodata' declaration!",
-                    flush=True,
-                )
-                raise KeyError("Vel is not defined!")
+                self.paleoVelocityPath = None
+
+            try:
+                self.paleoVelocityXYZPath = paleoDict["velXYZ"]
+            except KeyError:
+                self.paleoVelocityXYZPath = None
+
+                # print(
+                #     "Key 'vel' is required and is missing in the 'paleodata' declaration!",
+                #     flush=True,
+                # )
+                # raise KeyError("Vel is not defined!")
 
             try:
                 self.rotationsDirectory = paleoDict["rot"]

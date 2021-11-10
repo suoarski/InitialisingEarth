@@ -4,6 +4,8 @@ import stripy as stripy
 from pathlib import Path
 from scipy import ndimage
 from time import process_time
+import pandas as pd
+from scipy.spatial import cKDTree
 
 
 class EarthSurf(object):
@@ -79,7 +81,10 @@ class EarthSurf(object):
         self.ncells = len(self.cells)
 
         # Get a xarray data from paleosurface file
-        paleoData = self._getPaleoTopo(self.tStart)
+        if self.reverse:
+            paleoData = self._getPaleoTopo(self.tEnd)
+        else:
+            paleoData = self._getPaleoTopo(self.tStart)
 
         # Convert spherical mesh longitudes and latitudes from radian to degree
         glat = np.mod(np.degrees(grid.lats) + 90, 180.0)
@@ -145,6 +150,40 @@ class EarthSurf(object):
 
         return data.sortby(data.latitude)
 
+    def _mvPaleoVel(self):
+        """
+        Earth paleos-velocity is read from a xy files containing lon, lat and velocities at a specific geological time interval.
+
+        """
+
+        if self.interpZ is not None:
+            self.elev = self.interpZ.copy()
+
+        # Read plate IDs from gPlates exports
+        velfile = self.paleoVelocityXYZPath + "/vel" + str(int(self.tNow)) + "Ma.xy"
+        data = pd.read_csv(
+            velfile,
+            sep=r"\s+",
+            engine="c",
+            header=None,
+            na_filter=False,
+            dtype=float,
+            low_memory=False,
+        )
+        data = data.drop_duplicates().reset_index(drop=True)
+        llvel = data.iloc[:, 0:2].to_numpy()
+        velX = data.iloc[:, 2] * self.dt * 1.0e6 / 100.0
+        velY = data.iloc[:, 3] * self.dt * 1.0e6 / 100.0
+        velZ = data.iloc[:, 4] * self.dt * 1.0e6 / 100.0
+        veltree = cKDTree(llvel)
+        dist, ids = veltree.query(self.lonlat, k=1)
+        self.nxyz = self.xyz.copy()
+        self.nxyz[:, 0] -= velX[ids]
+        self.nxyz[:, 1] -= velY[ids]
+        self.nxyz[:, 2] -= velZ[ids]
+
+        return
+
     def _getPaleoRain(self, time):
         """
         Earth paleoclimate is read from a netcdf files containing lon, lat and rainfall at a specific geological time interval.
@@ -182,7 +221,7 @@ class EarthSurf(object):
         for idx in np.unique(self.plateIds):
             rot = self.rotations[idx]
             self.nxyz[self.plateIds == idx] = rot.apply(self.nxyz[self.plateIds == idx])
-            self.nxyz[self.plateIds == idx]
+            # self.nxyz[self.plateIds == idx]
 
         return
 
@@ -197,7 +236,7 @@ class EarthSurf(object):
         for idx in np.unique(self.plateIds):
             rot = self.rotations[idx]
             self.nxyz[self.plateIds == idx] = rot.apply(self.nxyz[self.plateIds == idx])
-            self.nxyz[self.plateIds == idx]
+            # self.nxyz[self.plateIds == idx]
 
         return
 
@@ -207,6 +246,7 @@ class EarthSurf(object):
 
         After displacement, vertices in subduction regions are closer to each other and are identified using the `dbscan` clustering algorithm. Then, for each vertex belonging to a cluster, we set its height and vertical tectonic regime to the maximum of its nearest neighbours.
         """
+
         self._dbscanMPI(output, cwd)
 
         # Get heights of nearest neighbours
@@ -219,7 +259,7 @@ class EarthSurf(object):
         self.clustZ = self.elev.copy()
         self.clustZ[idCluster] = np.max(neighbourHeights, axis=1)
 
-        if not self.paleoDemForce and self.tecForce is None:
+        if not self.paleoDemForce and self.tecForce is None and self.tectoEarth:
             # Get tectonics of nearest neighbours
             idCluster = self.isCluster > 0
             tectoInCluster = self.uplifts[idCluster]
@@ -244,7 +284,10 @@ class EarthSurf(object):
         """
 
         t0 = process_time()
-        self._moveSurface()
+        if self.paleoVelocityPath is not None:
+            self._moveSurface()
+        elif self.paleoVelocityXYZPath is not None:
+            self._mvPaleoVel()
         if self.verbose:
             print(
                 "\nMove plates (%0.02f seconds)" % (process_time() - t0), flush=True,
@@ -257,7 +300,7 @@ class EarthSurf(object):
         self.distNbghs, self.idNbghs = self.ptree.query(self.xyz, k=self.interp)
         if self.interp == 1:
             self.interpZ = self.clustZ[self.idNbghs]
-            if not self.paleoDemForce and self.tecForce is None:
+            if not self.paleoDemForce and self.tecForce is None and self.tectoEarth:
                 self.interpT = self.clustTec[self.idNbghs]
         else:
             # Inverse weighting distance...
@@ -277,7 +320,7 @@ class EarthSurf(object):
             if len(onIDs) > 0:
                 self.interpZ[onIDs] = self.clustZ[self.idNbghs[onIDs, 0]]
 
-            if not self.paleoDemForce and self.tecForce is None:
+            if not self.paleoDemForce and self.tecForce is None and self.tectoEarth:
                 tmp = np.sum(weights * self.clustTec[self.idNbghs], axis=1)
                 # Vertical displacements
                 self.interpT = np.divide(
@@ -309,9 +352,9 @@ class EarthSurf(object):
             paleoTecPath = Path(self.tecForce)
             initialTecPath = list(paleoTecPath.glob("**/%dMa.npz" % int(time)))[0]
             paleoData = np.load(initialTecPath)
-            self.interpT = paleoData["t"][:, 0]
+            self.interpT = paleoData["t"][:]
             self.interpZ += self.interpT
-        else:
+        elif self.tectoEarth:
             self.interpZ += self.interpT
 
         if self.paleoRainPath is not None:

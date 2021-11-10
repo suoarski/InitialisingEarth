@@ -24,7 +24,10 @@ class WriteMesh(object):
         """
 
         self.outstep = 0
-        self.saveTime = self.tStart
+        if self.reverse:
+            self.saveTime = self.tEnd
+        else:
+            self.saveTime = self.tStart
 
         self._createOutputDir()
 
@@ -38,26 +41,48 @@ class WriteMesh(object):
         """
 
         # Output time step for first step
-        if self.saveTime == self.tStart:
-            t0 = process_time()
-            self._outputMesh()
-            self.saveTime -= self.dt
-            if self.verbose:
-                print(
-                    "Writing  outputs (%0.02f seconds)" % (process_time() - t0),
-                    flush=True,
-                )
+        if self.reverse:
+            if self.saveTime == self.tEnd:
+                t0 = process_time()
+                self._outputMesh()
+                self.saveTime += self.dt
+                if self.verbose:
+                    print(
+                        "Writing  outputs (%0.02f seconds)" % (process_time() - t0),
+                        flush=True,
+                    )
 
-        # Output time step after start time
-        elif self.tNow >= self.saveTime:
-            t0 = process_time()
-            self._outputMesh()
-            self.saveTime -= self.dt
-            if self.verbose:
-                print(
-                    "Writing  outputs (%0.02f seconds)" % (process_time() - t0),
-                    flush=True,
-                )
+            # Output time step after start time
+            elif self.tNow <= self.saveTime:
+                t0 = process_time()
+                self._outputMesh()
+                self.saveTime += self.dt
+                if self.verbose:
+                    print(
+                        "Writing  outputs (%0.02f seconds)" % (process_time() - t0),
+                        flush=True,
+                    )
+        else:
+            if self.saveTime == self.tStart:
+                t0 = process_time()
+                self._outputMesh()
+                self.saveTime -= self.dt
+                if self.verbose:
+                    print(
+                        "Writing  outputs (%0.02f seconds)" % (process_time() - t0),
+                        flush=True,
+                    )
+
+            # Output time step after start time
+            elif self.tNow >= self.saveTime:
+                t0 = process_time()
+                self._outputMesh()
+                self.saveTime -= self.dt
+                if self.verbose:
+                    print(
+                        "Writing  outputs (%0.02f seconds)" % (process_time() - t0),
+                        flush=True,
+                    )
 
         return
 
@@ -85,10 +110,21 @@ class WriteMesh(object):
             s = Gmesh.idx_hierarchy.shape
             a = np.sort(Gmesh.idx_hierarchy.reshape(s[0], -1).T)
             Gmesh.edges = {"points": np.unique(a, axis=0)}
-            ngbNbs, ngbID = definegtin(
-                len(self.xyz), Gmesh.cells("points"), Gmesh.edges["points"]
-            )
-
+            # ngbNbs, ngbID = definegtin(
+            #     len(self.xyz), Gmesh.cells("points"), Gmesh.edges["points"]
+            # )
+            if meshplex.__version__ >= "0.16.0":
+                ngbNbs, ngbID = definegtin(
+                    len(self.xyz), Gmesh.cells("points"), Gmesh.edges["points"]
+                )
+            elif meshplex.__version__ >= "0.14.0":
+                ngbNbs, ngbID = definegtin(
+                    len(self.xyz), Gmesh.cells["points"], Gmesh.edges["points"]
+                )
+            else:
+                ngbNbs, ngbID = definegtin(
+                    len(self.xyz), Gmesh.cells["nodes"], Gmesh.edges["nodes"]
+                )
             np.savez_compressed(
                 gosplmesh,
                 v=self.xyz,
@@ -109,7 +145,6 @@ class WriteMesh(object):
             t0 = process_time()
             np.savez_compressed(
                 gosplmesh,
-                iplate=self.plateIds,
                 clust=self.isCluster,
                 cngbh=self.clustNgbhs,
                 dngbh=self.distNbghs,
@@ -215,10 +250,14 @@ class WriteMesh(object):
                 "elev", shape=(self.npoints, 1), dtype="float32", compression="gzip",
             )
             f["elev"][:, 0] = self.elev
-            f.create_dataset(
-                "plateid", shape=(self.npoints, 1), dtype="int32", compression="gzip",
-            )
-            f["plateid"][:, 0] = self.plateIds
+            if self.paleoVelocityPath is not None:
+                f.create_dataset(
+                    "plateid",
+                    shape=(self.npoints, 1),
+                    dtype="int32",
+                    compression="gzip",
+                )
+                f["plateid"][:, 0] = self.plateIds
 
             f.create_dataset(
                 "uplift", shape=(self.npoints, 1), dtype="float32", compression="gzip",
@@ -234,7 +273,7 @@ class WriteMesh(object):
                 )
                 f["rain"][:, 0] = self.rain
 
-            if not self.paleoDemForce and self.tecForce is None:
+            if not self.paleoDemForce and self.tecForce is None and self.tectoEarth:
                 f.create_dataset(
                     "dist",
                     shape=(self.npoints, 1),
@@ -268,9 +307,15 @@ class WriteMesh(object):
         f.write('<Xdmf Version="2.0" xmlns:xi="http://www.w3.org/2001/XInclude">\n')
         f.write(" <Domain>\n")
         f.write('    <Grid GridType="Collection" CollectionType="Spatial">\n')
-        f.write(
-            '      <Time Type="Single" Value="%0.02f"/>\n' % -(self.saveTime * 1.0e6)
-        )
+        if self.reverse:
+            f.write(
+                '      <Time Type="Single" Value="%0.02f"/>\n' % (self.saveTime * 1.0e6)
+            )
+        else:
+            f.write(
+                '      <Time Type="Single" Value="%0.02f"/>\n'
+                % -(self.saveTime * 1.0e6)
+            )
 
         pfile = "h5/earth." + str(self.outstep) + ".h5"
         tfile = "h5/topology.h5"
@@ -294,10 +339,13 @@ class WriteMesh(object):
         f.write('Dimensions="%d 1">%s:/elev</DataItem>\n' % (self.npoints, pfile))
         f.write("         </Attribute>\n")
 
-        f.write('         <Attribute Type="Scalar" Center="Node" Name="plateid">\n')
-        f.write('          <DataItem Format="HDF" NumberType="Int" Precision="4" ')
-        f.write('Dimensions="%d 1">%s:/plateid</DataItem>\n' % (self.npoints, pfile))
-        f.write("         </Attribute>\n")
+        if self.paleoVelocityPath is not None:
+            f.write('         <Attribute Type="Scalar" Center="Node" Name="plateid">\n')
+            f.write('          <DataItem Format="HDF" NumberType="Int" Precision="4" ')
+            f.write(
+                'Dimensions="%d 1">%s:/plateid</DataItem>\n' % (self.npoints, pfile)
+            )
+            f.write("         </Attribute>\n")
 
         f.write('         <Attribute Type="Scalar" Center="Node" Name="vtec">\n')
         f.write('          <DataItem Format="HDF" NumberType="Float" Precision="4" ')
@@ -312,7 +360,7 @@ class WriteMesh(object):
             f.write('Dimensions="%d 1">%s:/rain</DataItem>\n' % (self.npoints, pfile))
             f.write("         </Attribute>\n")
 
-        if not self.paleoDemForce and self.tecForce is None:
+        if not self.paleoDemForce and self.tecForce is None and self.tectoEarth:
             f.write('         <Attribute Type="Scalar" Center="Node" Name="dist">\n')
             f.write(
                 '          <DataItem Format="HDF" NumberType="Float" Precision="4" '

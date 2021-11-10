@@ -57,8 +57,12 @@ class Model(
 
         _EarthSurf.remeshSurface(self)
         # Advance time
-        self.tNow -= self.dt
-        _PlateInfo.updatePlates(self)
+        if self.reverse:
+            self.tNow += self.dt
+        else:
+            self.tNow -= self.dt
+        if self.paleoVelocityPath is not None:
+            _PlateInfo.updatePlates(self)
         _WriteMesh.visModel(self)
 
         return
@@ -68,14 +72,24 @@ class Model(
         Main entry point to run the simulation over time. This function calls the `runStep` function described above.
         """
 
-        while self.tNow > self.tEnd:
-            print(
-                "\n+++ Compute evolution from "
-                + str(self.tNow)
-                + "Ma to "
-                + str(self.tNow - self.dt)
-                + "Ma"
-            )
-            self.runStep()
-
+        if self.reverse:
+            while self.tNow < self.tStart:
+                print(
+                    "\n+++ Compute evolution from "
+                    + str(self.tNow)
+                    + "Ma to "
+                    + str(self.tNow + self.dt)
+                    + "Ma"
+                )
+                self.runStep()
+        else:
+            while self.tNow > self.tEnd:
+                print(
+                    "\n+++ Compute evolution from "
+                    + str(self.tNow)
+                    + "Ma to "
+                    + str(self.tNow - self.dt)
+                    + "Ma"
+                )
+                self.runStep()
         return

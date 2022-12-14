@@ -1,5 +1,14 @@
 # Initialising Earth
-A series of jupyter notebooks demonstrating python code for procedural earth surface dynamics with a particular focus on tectonic plates. This is still a work in progress and changes will be made regularly.
+A series of jupyter notebooks demonstrating python code for simulating plate tectonics over the course of millions of years. Note that this was some of my earlier works in a research project that then later evolved to my contribution in a publication in the jurnal "Nature Reviews Earth & Environment" titled "[A glimpse into a possible geomorphic future of Tibet](https://www.nature.com/articles/s43017-022-00355-z)"
+
+# Video Presentation
+[See this youtube video for a presentation on this project](https://youtu.be/F_suI-KvDiI)
+
+# Notebooks
+- [Moving Tectonic Plates](https://github.com/suoarski/InitialisingEarth/blob/main/NotebookTutorials/1MovingTectonicPlates/1MovingPlates.ipynb)
+- [Subduction Uplift](https://github.com/suoarski/InitialisingEarth/blob/main/NotebookTutorials/2SubductionUplift/2TectonicForces.ipynb)
+- [Diverging Plates](https://github.com/suoarski/InitialisingEarth/blob/main/NotebookTutorials/3Divergence/3Divergence.ipynb)
+- [Using GOSPL](https://github.com/suoarski/InitialisingEarth/blob/main/NotebookTutorials/4UsingGospl/4UsingGospl.ipynb)
 
 
 ### Running the Notebooks with Docker
